@@ -100,3 +100,11 @@ test('parsePlan cleans up the model output', () => {
   assert.equal(plan.looks[0].items[0].maxPrice, 40);
   assert.equal(plan.looks[0].items[0].ownedId, 'o1');
 });
+
+import { explainStylistError } from '../lib/stylist.js';
+test('stylist errors say what to fix', () => {
+  assert.match(explainStylistError({ status: 400, data: { error: { message: 'Your credit balance is too low to access the Anthropic API.' } } }), /out of credits/);
+  assert.match(explainStylistError({ status: 404, data: { error: { type: 'not_found_error', message: 'model: claude-x' } } }), /model/);
+  assert.match(explainStylistError({ status: 401 }), /rejected/);
+  assert.match(explainStylistError({ kind: 'truncated' }), /cut off/);
+});

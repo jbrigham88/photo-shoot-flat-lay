@@ -1,5 +1,5 @@
 import { json, readJson, missingKey } from '../../lib/http.js';
-import { planLooks } from '../../lib/stylist.js';
+import { planLooks, explainStylistError } from '../../lib/stylist.js';
 
 // POST /api/stylist { quiz, family, weather, photos }
 export async function onRequestPost({ request, env }) {
@@ -14,9 +14,8 @@ export async function onRequestPost({ request, env }) {
     if (!plan.looks.length) throw new Error('empty');
     return json(200, plan);
   } catch (e) {
-    return json(502, {
-      error: 'stylist_failed',
-      message: e.status === 401 ? 'The AI key was rejected. Check ANTHROPIC_API_KEY.' : 'The stylist could not finish. Try again.',
-    });
+    // Shows up in Cloudflare → your Worker → Observability → Logs.
+    console.error('stylist_failed', e?.status || '', e?.kind || e?.name || '', JSON.stringify(e?.data || {}).slice(0, 500), e?.sample || '');
+    return json(502, { error: 'stylist_failed', message: explainStylistError(e) });
   }
 }
