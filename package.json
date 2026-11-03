@@ -1,0 +1,14 @@
+{
+  "name": "photo-shoot-flat-lay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plan coordinated family photo shoot outfits as flat-lay collages with real, shoppable products.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "test": "node --test test/*.test.js"
+  }
+}
