@@ -4,6 +4,8 @@ main = "src/worker.js"
 compatibility_date = "2026-10-01"
 # Keep keys added in the Cloudflare dashboard when a new version deploys.
 keep_vars = true
+# Keep the free photo-shoot-flat-lay.<account>.workers.dev address switched on.
+workers_dev = true
 
 [assets]
 directory = "./public"
