@@ -108,3 +108,21 @@ test('stylist errors say what to fix', () => {
   assert.match(explainStylistError({ status: 401 }), /rejected/);
   assert.match(explainStylistError({ kind: 'truncated' }), /cut off/);
 });
+
+import { searchProducts, explainProductError } from '../lib/products.js';
+test('product search falls back to simpler filters when rejected', async () => {
+  const sent = [];
+  const fetcher = async (url, opts) => {
+    const body = JSON.parse(opts.body); sent.push(body);
+    if (body.filters?.age) { const e = new Error('422'); e.status = 422; e.data = { detail: [{ msg: 'bad age' }] }; throw e; }
+    return { products: [{ id: 'a', title: 'T', images: ['https://x/a.jpg'], offers: [{ url: 'https://buy', price: { price: 10 } }] }] };
+  };
+  const out = await searchProducts('k', { query: 'sweater', maxPrice: 20, age: 5 }, fetcher);
+  assert.equal(out.length, 1);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].filters, { price: { max_price: 20 } });
+});
+test('product errors say what to fix', () => {
+  assert.match(explainProductError({ status: 401 }), /rejected the key/);
+  assert.match(explainProductError({ status: 422, data: { detail: [{ msg: 'field required' }] } }), /422: field required/);
+});

@@ -1,5 +1,5 @@
 import { json, readJson, missingKey } from '../../lib/http.js';
-import { searchProducts } from '../../lib/products.js';
+import { searchProducts, explainProductError } from '../../lib/products.js';
 
 // POST /api/products { query, maxPrice, gender, age }
 export async function onRequestPost({ request, env }) {
@@ -11,10 +11,8 @@ export async function onRequestPost({ request, env }) {
     const products = await searchProducts(env.CHANNEL3_API_KEY, body);
     return json(200, { products });
   } catch (e) {
-    const rejected = e.status === 401 || e.status === 403;
-    return json(502, {
-      error: 'search_failed',
-      message: rejected ? 'The product API rejected the key. Check CHANNEL3_API_KEY.' : 'Product search is unavailable right now.',
-    });
+    // Shows up in Cloudflare → your Worker → Observability → Logs.
+    console.error('search_failed', e?.status || '', e?.name || '', JSON.stringify(e?.data || {}).slice(0, 500));
+    return json(502, { error: 'search_failed', message: explainProductError(e) });
   }
 }
