@@ -8,7 +8,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "dev": "vercel dev",
+    "dev": "npx wrangler pages dev",
     "test": "node --test test/*.test.js"
   }
 }

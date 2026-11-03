@@ -1,0 +1,4 @@
+# Cloudflare Pages: static files from public/, API routes from functions/.
+name = "photo-shoot-flat-lay"
+pages_build_output_dir = "public"
+compatibility_date = "2026-10-01"

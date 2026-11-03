@@ -76,7 +76,7 @@ function toast(msg) {
 }
 
 // Shrink photos before upload so requests stay small and fast.
-function resizeImage(file, max = 1024) {
+function resizeImage(file, max = 800) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -88,7 +88,7 @@ function resizeImage(file, max = 1024) {
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', 0.82));
+      resolve(c.toDataURL('image/jpeg', 0.78));
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not a photo we can read.')); };
     img.src = url;
@@ -220,7 +220,7 @@ function renderQuiz() {
 
 function setupNotice() {
   const missing = [!config.stylist && 'ANTHROPIC_API_KEY (stylist)', !config.products && 'CHANNEL3_API_KEY (product photos and shop links)'].filter(Boolean);
-  return `<div class="notice"><p><b>Setup:</b> add ${missing.map(esc).join(' and ')} in Vercel → Settings → Environment Variables, then redeploy. ${!config.stylist ? 'Until then you can preview a sample plan.' : ''}</p></div>`;
+  return `<div class="notice"><p><b>Setup:</b> add ${missing.map(esc).join(' and ')} in Cloudflare (your Pages project → Settings → Variables and Secrets), then redeploy. ${!config.stylist ? 'Until then you can preview a sample plan.' : ''}</p></div>`;
 }
 
 function personRow(p) {
@@ -323,7 +323,7 @@ document.addEventListener('change', async (e) => {
     if (t.id === 'familyFile' && t.files[0]) { state.photos.family = await resizeImage(t.files[0]); renderQuiz(); }
     if (t.id === 'ownedFile' && t.files[0]) {
       if (state.photos.owned.length >= 8) return toast('Up to 8 pieces');
-      const dataUrl = await resizeImage(t.files[0], 900);
+      const dataUrl = await resizeImage(t.files[0], 700);
       state.photos.owned.push({
         id: uid('o'), personId: document.getElementById('ownedWho').value,
         label: document.getElementById('ownedLabel').value.trim(), dataUrl,
