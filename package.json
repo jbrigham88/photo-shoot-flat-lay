@@ -8,7 +8,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "dev": "npx wrangler pages dev",
+    "dev": "npx wrangler dev",
     "test": "node --test test/*.test.js"
   }
 }

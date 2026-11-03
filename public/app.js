@@ -220,7 +220,7 @@ function renderQuiz() {
 
 function setupNotice() {
   const missing = [!config.stylist && 'ANTHROPIC_API_KEY (stylist)', !config.products && 'CHANNEL3_API_KEY (product photos and shop links)'].filter(Boolean);
-  return `<div class="notice"><p><b>Setup:</b> add ${missing.map(esc).join(' and ')} in Cloudflare (your Pages project → Settings → Variables and Secrets), then redeploy. ${!config.stylist ? 'Until then you can preview a sample plan.' : ''}</p></div>`;
+  return `<div class="notice"><p><b>Setup:</b> add ${missing.map(esc).join(' and ')} in Cloudflare (your Worker → Settings → Variables and Secrets), then redeploy. ${!config.stylist ? 'Until then you can preview a sample plan.' : ''}</p></div>`;
 }
 
 function personRow(p) {

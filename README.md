@@ -18,19 +18,20 @@ A free web app that styles a whole family for a photo shoot. Parents answer a fe
 - **Later**: direct programs (Amazon Associates, Target, Old Navy, Nordstrom via Impact/CJ/Rakuten) for the stores people buy from most, for a bigger share.
 - The footer carries the FTC disclosure, and shop links use `rel="sponsored"`.
 
-## Deploy on Cloudflare Pages (free)
+## Deploy on Cloudflare (free)
+
+The app runs as a Cloudflare Worker: `public/` is served as static files and `/api/*` runs `src/worker.js`.
 
 1. Sign up at <https://dash.cloudflare.com/sign-up>.
-2. Go to **Workers & Pages → Create → Pages → Connect to Git**, authorize GitHub, and pick this repo.
-3. Build settings: Framework preset **None**, build command **empty**, build output directory **public**.
-4. Click **Save and Deploy**. You get a link like `photo-shoot-flat-lay.pages.dev`.
-5. Open the project's **Settings → Variables and Secrets**, add these as **Secrets** for Production:
+2. Go to **Workers & Pages → Create → Import a repository**, connect GitHub and pick this repo.
+3. Keep the defaults: project name `photo-shoot-flat-lay`, build command empty, deploy command `npx wrangler deploy`. Click **Deploy**. You get a link like `photo-shoot-flat-lay.<your-subdomain>.workers.dev`.
+4. Open the Worker's **Settings → Variables and Secrets** and add these as type **Secret**:
    - `ANTHROPIC_API_KEY`: from <https://console.anthropic.com>
    - `CHANNEL3_API_KEY`: free at <https://trychannel3.com>
    - `SKIMLINKS_ID` (optional)
-6. Go to **Deployments** and retry the latest deployment so the keys take effect. Until they're in, the page says what's missing and can show a sample plan.
+   Saving a secret deploys it right away. Until the keys are in, the page says what's missing and can show a sample plan.
 
-Every push to `main` redeploys automatically. Cloudflare's free plan allows 100,000 API requests a day and, unlike Vercel's free plan, isn't limited to non-commercial use. Its CPU limit per request is small, so photos are shrunk in the browser before upload; if the stylist ever fails on large photo sets, the Workers Paid plan ($5/month) raises the limit.
+Every push to `main` redeploys automatically. Cloudflare's free plan allows 100,000 requests a day and, unlike Vercel's free plan, isn't limited to non-commercial use. Its CPU limit per request is small, so photos are shrunk in the browser before upload; if the stylist ever fails on large photo sets, the Workers Paid plan ($5/month) raises the limit.
 
 Local: copy `.dev.vars.example` to `.dev.vars`, then `npm run dev`.
 
@@ -38,11 +39,12 @@ Local: copy `.dev.vars.example` to `.dev.vars`, then `npm run dev`.
 
 ```
 public/                          the app (plain HTML/CSS/JS, no build step)
+src/worker.js                    routes /api/* to the handlers below
 functions/api/config.js          which services are set up
 functions/api/weather.js         forecast or typical weather
 functions/api/stylist.js         Claude plans the looks
 functions/api/products.js        Channel3 product search
-wrangler.toml                    Cloudflare Pages settings
+wrangler.toml                    Cloudflare settings
 lib/                             shared logic, unit-tested in test/
 ```
 

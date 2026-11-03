@@ -1,4 +1,11 @@
-# Cloudflare Pages: static files from public/, API routes from functions/.
+# Cloudflare Worker: serves public/ as static files; /api/* runs src/worker.js.
 name = "photo-shoot-flat-lay"
-pages_build_output_dir = "public"
+main = "src/worker.js"
 compatibility_date = "2026-10-01"
+# Keep keys added in the Cloudflare dashboard when a new version deploys.
+keep_vars = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
