@@ -11,8 +11,8 @@ const COLORS = [
   ['Olive', '#6B6B3A'], ['Emerald', '#1F5E4A'], ['Dusty blue', '#8EA6BD'], ['Navy', '#1F2C4A'],
   ['Charcoal', '#3B3D40'], ['Black', '#151515'], ['White', '#FAFAF7'], ['Plaid', '#8C3B2E'],
 ];
-const SLOT_ORDER = ['outerwear', 'dress', 'top', 'bottom', 'shoes'];
-const SLOT_LABEL = { outerwear: 'Layer', dress: 'Dress', top: 'Top', bottom: 'Bottom', shoes: 'Shoes' };
+const SLOT_ORDER = ['outerwear', 'dress', 'top', 'bottom', 'legwear', 'shoes'];
+const SLOT_LABEL = { outerwear: 'Layer', dress: 'Dress', top: 'Top', bottom: 'Bottom', legwear: 'Tights', shoes: 'Shoes' };
 const REASONS = [
   ['color', 'Wrong color'], ['together', "Doesn't go with the rest"], ['style', 'Not their style'],
   ['formal', 'Too dressy'], ['casual', 'Too casual'], ['price', 'Too expensive'],
@@ -110,6 +110,75 @@ async function api(path, options = {}) {
   return data;
 }
 
+// ---------- cutting a piece out of an uploaded photo or screenshot ----------
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not read that photo.'));
+    img.src = src;
+  });
+}
+
+function canvasOf(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+// Crop transparent edges off a cutout and cap its size.
+function trimTransparent(img, max = 700) {
+  const c = canvasOf(img.naturalWidth, img.naturalHeight);
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
+  let x1 = width; let y1 = height; let x2 = -1; let y2 = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (data[(y * width + x) * 4 + 3] > 16) { if (x < x1) x1 = x; if (x > x2) x2 = x; if (y < y1) y1 = y; if (y > y2) y2 = y; }
+    }
+  }
+  if (x2 < 0) return null; // nothing left after background removal
+  const pad = Math.round(Math.max(x2 - x1, y2 - y1) * 0.04);
+  x1 = Math.max(0, x1 - pad); y1 = Math.max(0, y1 - pad); x2 = Math.min(width - 1, x2 + pad); y2 = Math.min(height - 1, y2 + pad);
+  const w = x2 - x1 + 1; const h = y2 - y1 + 1;
+  const scale = Math.min(1, max / Math.max(w, h));
+  const out = canvasOf(Math.round(w * scale), Math.round(h * scale));
+  out.getContext('2d').drawImage(c, x1, y1, w, h, 0, 0, out.width, out.height);
+  return out.toDataURL('image/png');
+}
+
+async function cutOutPiece(o) {
+  try {
+    const img = await loadImage(o.dataUrl);
+    const W = img.naturalWidth; const H = img.naturalHeight;
+    // 1. Find the garment (skips shop text, prices and other products in screenshots).
+    let box = null;
+    try {
+      const r = await api('/api/locate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: o.dataUrl, width: W, height: H, label: o.label }),
+      });
+      if (r.found) { box = r.box; if (!o.label && r.label) o.label = r.label; }
+    } catch { /* fall back to the whole photo */ }
+    const [x1, y1, x2, y2] = box || [0, 0, W, H];
+    const pad = Math.round(Math.max(x2 - x1, y2 - y1) * 0.04);
+    const cx = Math.max(0, x1 - pad); const cy = Math.max(0, y1 - pad);
+    const cw = Math.min(W, x2 + pad) - cx; const ch = Math.min(H, y2 + pad) - cy;
+    const crop = canvasOf(cw, ch);
+    crop.getContext('2d').drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+    const cropUrl = crop.toDataURL('image/jpeg', 0.9);
+    // 2. Remove the background.
+    const blob = await new Promise((r) => crop.toBlob(r, 'image/png'));
+    const res = await fetch('/api/cutout', { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob });
+    if (res.ok && (res.headers.get('content-type') || '').startsWith('image/')) {
+      const url = URL.createObjectURL(await res.blob());
+      const trimmed = trimTransparent(await loadImage(url));
+      URL.revokeObjectURL(url);
+      if (trimmed) { o.dataUrl = trimmed; o.cutout = true; return; }
+    }
+    o.dataUrl = cropUrl; // background removal unavailable: at least show just the piece
+  } catch (e) {
+    toast(e.message || 'Could not cut out that piece');
+  }
+}
+
 // ---------- quiz ----------
 function chip(group, value, label, pressed) {
   return `<button type="button" class="chip" data-chip="${group}" data-value="${esc(value)}" aria-pressed="${pressed}">${esc(label)}</button>`;
@@ -201,7 +270,7 @@ function renderQuiz() {
           <div class="field"><span class="label">Pieces you already own</span>
             <p class="hint">Snap a photo of anything you want to use, like a dress you love. The looks are built around it and it shows up in the collage.</p>
             <div class="drop">
-              <div class="thumbs">${state.photos.owned.map((o) => thumb(o.dataUrl, `${o.label || 'Piece'} · ${personLabel(personById(o.personId) || {})}`, `owned:${o.id}`)).join('')}</div>
+              <div class="thumbs">${state.photos.owned.map((o) => thumb(o.dataUrl, `${o.status === 'cutting' ? 'Cutting out… ' : ''}${o.label || 'Piece'} · ${personLabel(personById(o.personId) || {})}`, `owned:${o.id}`, o.cutout)).join('')}</div>
               <div class="owned-form">
                 <div class="field"><label for="ownedWho">Whose?</label>
                   <select id="ownedWho">${state.family.map((p) => `<option value="${p.id}">${esc(personLabel(p))}</option>`).join('')}</select></div>
@@ -240,8 +309,8 @@ function personRow(p) {
   </div>`;
 }
 
-function thumb(url, caption, ref) {
-  return `<figure class="thumb"><img src="${url}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption>
+function thumb(url, caption, ref, cutout = false) {
+  return `<figure class="thumb${cutout ? ' thumb--cutout' : ''}"><img src="${url}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption>
     <button type="button" class="x" data-action="remove-photo" data-ref="${esc(ref)}" aria-label="Remove ${esc(caption)}">×</button></figure>`;
 }
 
@@ -282,11 +351,13 @@ document.addEventListener('click', async (e) => {
   }
   if (a === 'edit') { state.view = 'quiz'; renderQuiz(); window.scrollTo(0, 0); }
   if (a === 'swap') openSheet(Number(el.dataset.look), el.dataset.key);
-  if (a === 'retry-item') replaceItem(Number(el.dataset.look), el.dataset.key, 'other', 'Find any piece that works with the rest of the look.');
+  if (a === 'retry-item') openSheet(Number(el.dataset.look), el.dataset.key);
   if (a === 'retry-look') buildLook(Number(el.dataset.look));
   if (a === 'go') goToLook(Number(el.dataset.to));
   if (a === 'step') goToLook(state.current + Number(el.dataset.to));
-  if (a === 'reason') { state.sheet.reason = el.dataset.value; renderSheet(); }
+  if (a === 'reason') toggleReason(el.dataset.value);
+  if (a === 'pick-option') pickOption(el.dataset.id);
+  if (a === 'sheet-back') { state.sheet.step = 'why'; renderSheet(); }
   if (a === 'sheet-cancel') closeSheet();
   if (a === 'sheet-go') submitSheet();
 });
@@ -326,11 +397,13 @@ document.addEventListener('change', async (e) => {
     if (t.id === 'familyFile' && t.files[0]) { state.photos.family = await resizeImage(t.files[0]); renderQuiz(); }
     if (t.id === 'ownedFile' && t.files[0]) {
       if (state.photos.owned.length >= 8) return toast('Up to 8 pieces');
-      const dataUrl = await resizeImage(t.files[0], 700);
-      state.photos.owned.push({
+      const dataUrl = await resizeImage(t.files[0], 900);
+      const owned = {
         id: uid('o'), personId: document.getElementById('ownedWho').value,
-        label: document.getElementById('ownedLabel').value.trim(), dataUrl,
-      });
+        label: document.getElementById('ownedLabel').value.trim(), dataUrl, status: 'cutting',
+      };
+      state.photos.owned.push(owned);
+      owned.pending = cutOutPiece(owned).finally(() => { owned.status = 'ready'; if (state.view === 'quiz') renderQuiz(); });
       renderQuiz();
     }
   } catch (err) { toast(err.message); }
@@ -373,6 +446,7 @@ async function run() {
   state.view = 'working';
   window.scrollTo(0, 0);
   renderWorking(0);
+  await Promise.all(state.photos.owned.map((o) => o.pending).filter(Boolean));
   const q = state.quiz;
   state.weather = null;
   if (q.location.trim() && q.setting !== 'studio') {
@@ -386,7 +460,7 @@ async function run() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         quiz: q, family: familyForApi(), weather: state.weather && !state.weather.error ? state.weather : null,
-        photos: { inspiration: state.photos.inspiration, family: state.photos.family, owned: state.photos.owned },
+        photos: { inspiration: state.photos.inspiration, family: state.photos.family, owned: state.photos.owned.map(({ id, personId, label, dataUrl }) => ({ id, personId, label, dataUrl })) },
       }),
     });
   } catch (e) {
@@ -417,11 +491,11 @@ function itemWho(it) {
   return [personLabel(p), age, p.gender].filter(Boolean).join(', ');
 }
 
-async function searchFor(it, query, maxPrice) {
+async function searchFor(it, query, maxPrice, max) {
   const p = personById(it.personId) || {};
   const data = await api('/api/products', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, maxPrice, gender: p.gender, age: ageYears(p), excludeIds: it.seen }),
+    body: JSON.stringify({ query, maxPrice, gender: p.gender, age: ageYears(p), excludeIds: it.seen, slot: it.slot, max }),
   });
   data.products.forEach((c) => { if (!it.seen.includes(c.id)) it.seen.push(c.id); });
   return data.products;
@@ -436,6 +510,7 @@ function curateContext() {
   const q = state.quiz;
   return {
     style: q.styles.join(', '),
+    date: q.date,
     setting: [q.setting, q.timeOfDay, q.location].filter(Boolean).join(', '),
   };
 }
@@ -488,7 +563,7 @@ async function buildLook(idx) {
     await inBatches(todo, async (it) => {
       try { candidates[it.key] = await searchFor(it, it.query, it.maxPrice); } catch (e) { candidates[it.key] = []; failures.push(e.message); }
     });
-    if (failures.length === todo.length) throw new Error(failures[0]);
+    if (todo.length && failures.length === todo.length) throw new Error(failures[0]);
 
     // 2. The edit: look at the photos together and pick the set.
     look.step = 'Checking how everything looks together';
@@ -525,56 +600,14 @@ async function buildLook(idx) {
     look.status = 'ready';
   } catch (e) {
     look.status = 'error';
-    look.note = e.message;
+    look.note = e.message || 'Something went wrong building this look.';
   }
   renderPanel(idx);
 }
 
-// ---------- swapping one piece ----------
-async function replaceItem(idx, key, reason, note) {
-  const look = state.looks[idx];
-  const it = look.items.find((x) => x.key === key);
-  if (!it || it.status === 'loading') return;
-  const before = { product: it.product, status: it.status, description: it.description, query: it.query, maxPrice: it.maxPrice, colorName: it.colorName, colorHex: it.colorHex };
-  if (it.product && !it.seen.includes(it.product.id)) it.seen.push(it.product.id);
-  it.status = 'loading';
-  it.product = null;
-  renderPanel(idx);
-  try {
-    const plan = await api('/api/replace', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        item: { who: itemWho(it), slot: it.slot, description: before.description, currentTitle: before.product?.title, price: before.product?.price, maxPrice: before.maxPrice },
-        reason, note,
-        look: { name: look.name, vibe: look.vibe },
-        palette: state.plan.palette,
-        others: fixedPieces(look, [key]).map((f) => `${f.who}, ${f.slot}: ${f.title}`),
-      }),
-    });
-    Object.assign(it, { description: plan.description, colorName: plan.colorName, colorHex: plan.colorHex, query: plan.query, maxPrice: plan.maxPrice });
-    let found = null;
-    for (let round = 0; round < 2 && !found; round += 1) {
-      const cands = { [key]: await searchFor(it, it.query, it.maxPrice) };
-      if (!cands[key].length) continue;
-      const result = await curate(look, [it], cands, fixedPieces(look, [key]));
-      const c = result.choices[0];
-      found = cands[key].find((x) => x.id === c?.pick) || null;
-      if (!found && c?.newQuery) it.query = c.newQuery;
-    }
-    if (!found) throw new Error('No replacement passed the style check. Try a different reason.');
-    it.product = found;
-    it.status = 'ok';
-    it.message = '';
-  } catch (e) {
-    Object.assign(it, before);
-    toast(e.message);
-  }
-  renderPanel(idx);
-}
-
-// ---------- the "why swap it?" sheet ----------
+// ---------- swapping one piece: say why, then choose from checked options ----------
 function openSheet(lookIdx, key) {
-  state.sheet = { lookIdx, key, reason: null, note: '' };
+  state.sheet = { lookIdx, key, reasons: [], note: '', step: 'why', options: [], plan: null, message: '' };
   renderSheet();
 }
 function closeSheet() {
@@ -583,36 +616,131 @@ function closeSheet() {
   // A piece dragged off but kept goes back to full strength.
   document.querySelectorAll('.fl-piece').forEach((i) => { i.style.opacity = ''; });
 }
-function submitSheet() {
-  const s = state.sheet;
-  if (!s?.reason) return toast('Pick a reason so the stylist knows what to change');
-  closeSheet();
-  replaceItem(s.lookIdx, s.key, s.reason, s.note.trim());
+function toggleReason(v) {
+  const r = state.sheet.reasons;
+  state.sheet.reasons = r.includes(v) ? r.filter((x) => x !== v) : [...r, v];
+  renderSheet();
 }
+
+async function submitSheet() {
+  const sh = state.sheet;
+  if (!sh.reasons.length && !sh.note.trim()) return toast('Pick at least one reason so the stylist knows what to change');
+  sh.step = 'loading';
+  renderSheet();
+  try {
+    const { plan, options } = await findOptions(sh.lookIdx, sh.key, sh.reasons, sh.note.trim());
+    if (state.sheet !== sh) return; // closed while loading
+    sh.plan = plan;
+    sh.options = options;
+    sh.step = options.length ? 'options' : 'error';
+    sh.message = options.length ? '' : 'Nothing passed the style check for that feedback. Try different reasons or a note.';
+  } catch (e) {
+    if (state.sheet !== sh) return;
+    sh.step = 'error';
+    sh.message = e.message;
+  }
+  renderSheet();
+}
+
+async function findOptions(idx, key, reasons, note) {
+  const look = state.looks[idx];
+  const it = look.items.find((x) => x.key === key);
+  if (it.product && !it.seen.includes(it.product.id)) it.seen.push(it.product.id);
+  const plan = await api('/api/replace', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      item: { who: itemWho(it), slot: it.slot, description: it.description, currentTitle: it.product?.title, price: it.product?.price, maxPrice: it.maxPrice },
+      reasons, note, date: state.quiz.date,
+      look: { name: look.name, vibe: look.vibe },
+      palette: state.plan.palette,
+      others: fixedPieces(look, [key]).map((f) => `${f.who}, ${f.slot}: ${f.title}`),
+    }),
+  });
+  const probe = { ...it, description: plan.description, colorName: plan.colorName, maxPrice: plan.maxPrice };
+  const feedback = [reasons.map((r) => REASONS.find(([v]) => v === r)?.[1]).filter(Boolean).join(', '), note].filter(Boolean).join('. ');
+  let options = [];
+  let query = plan.query;
+  for (let round = 0; round < 2 && options.length < 3; round += 1) {
+    const cands = await searchFor(it, query, plan.maxPrice, 8);
+    if (!cands.length) continue;
+    const ranked = await api('/api/curate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'rank',
+        look: { name: look.name, vibe: look.vibe },
+        palette: state.plan.palette,
+        context: { ...curateContext(), feedback },
+        fixed: fixedPieces(look, [key]),
+        items: [{ key, who: itemWho(probe), slot: it.slot, description: probe.description, colorName: probe.colorName, maxPrice: probe.maxPrice, candidates: cands }],
+      }),
+    });
+    ranked.ranked.forEach((id) => { const c = cands.find((x) => x.id === id); if (c && !options.some((o) => o.id === id)) options.push(c); });
+    if (ranked.newQuery) query = ranked.newQuery;
+  }
+  return { plan, options: options.slice(0, 6) };
+}
+
+function pickOption(id) {
+  const sh = state.sheet;
+  const look = state.looks[sh.lookIdx];
+  const it = look.items.find((x) => x.key === sh.key);
+  const chosen = sh.options.find((o) => o.id === id);
+  if (!chosen) return;
+  Object.assign(it, {
+    product: chosen, status: 'ok', message: '',
+    description: sh.plan.description, colorName: sh.plan.colorName, colorHex: sh.plan.colorHex,
+    query: sh.plan.query, maxPrice: sh.plan.maxPrice,
+  });
+  const idx = sh.lookIdx;
+  closeSheet();
+  renderPanel(idx);
+  toast('Swapped');
+}
+
 function renderSheet() {
-  const s = state.sheet;
-  if (!s) return;
-  const look = state.looks[s.lookIdx];
-  const it = look.items.find((x) => x.key === s.key);
+  const sh = state.sheet;
+  if (!sh) return;
+  const look = state.looks[sh.lookIdx];
+  const it = look.items.find((x) => x.key === sh.key);
   const who = personLabel(personById(it.personId) || {});
   let el = document.getElementById('sheet');
   const first = !el;
   if (!el) { el = document.createElement('div'); el.id = 'sheet'; el.className = 'sheet-wrap'; document.body.appendChild(el); }
-  el.innerHTML = `<div class="sheet-backdrop" data-action="sheet-cancel"></div>
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
-      <div class="sheet__head">
-        ${it.product ? `<img src="${esc(it.product.image)}" alt="" referrerpolicy="no-referrer">` : ''}
-        <div><span class="eyebrow">${esc(who)} · ${esc(SLOT_LABEL[it.slot])}</span>
-          <h3 id="sheetTitle">What's not working?</h3></div>
-      </div>
-      <div class="chips">${REASONS.map(([v, l]) => `<button type="button" class="chip" data-action="reason" data-value="${v}" aria-pressed="${s.reason === v}">${esc(l)}</button>`).join('')}</div>
+  const head = `<div class="sheet__head">
+      ${it.product ? `<img src="${esc(it.product.image)}" alt="" referrerpolicy="no-referrer">` : `<div class="card__img" style="--swatch:${it.colorHex};width:64px"></div>`}
+      <div><span class="eyebrow">${esc(who)} · ${esc(SLOT_LABEL[it.slot])}</span>
+        <h3 id="sheetTitle">${sh.step === 'options' ? 'Pick a replacement' : sh.step === 'loading' ? 'Finding options…' : "What's not working?"}</h3></div>
+    </div>`;
+  let body = '';
+  if (sh.step === 'why' || sh.step === 'error') {
+    body = `<p class="hint" style="margin:0">Choose all that apply.</p>
+      <div class="chips" role="group" aria-label="Reasons">${REASONS.map(([v, l]) => `<button type="button" class="chip" data-action="reason" data-value="${v}" aria-pressed="${sh.reasons.includes(v)}">${esc(l)}</button>`).join('')}</div>
       <div class="field"><label for="sheetNote">Anything specific? (optional)</label>
-        <input id="sheetNote" type="text" placeholder="e.g. something softer, no plaid, more like the sweater" value="${esc(s.note)}"></div>
+        <input id="sheetNote" type="text" placeholder="e.g. something softer, no plaid, more like the sweater" value="${esc(sh.note)}"></div>
+      ${sh.step === 'error' ? `<p class="error" style="margin:0">${esc(sh.message)}</p>` : ''}
       <div class="sheet__actions">
         <button type="button" class="btn" data-action="sheet-cancel">Keep it</button>
-        <button type="button" class="btn btn--primary" data-action="sheet-go">Find a replacement</button>
-      </div>
-    </div>`;
+        <button type="button" class="btn btn--primary" data-action="sheet-go">Show options</button>
+      </div>`;
+  } else if (sh.step === 'loading') {
+    body = `<div class="sheet__loading"><span class="spinner" aria-hidden="true"></span>
+      <p>The stylist is searching and checking each option against the rest of the look. This takes about 20 seconds.</p></div>
+      <div class="sheet__actions"><button type="button" class="btn" data-action="sheet-cancel">Cancel</button></div>`;
+  } else {
+    body = `<div class="shelf shelf--options">${sh.options.map((o) => `
+      <article class="card">
+        <img src="${esc(o.image)}" alt="${esc(o.title)}" referrerpolicy="no-referrer">
+        <span class="card__title">${esc(o.title)}</span>
+        <span class="card__meta"><b>${money(o.price)}</b>${o.compareAt ? ` <s>${money(o.compareAt)}</s>` : ''} · ${esc(o.merchant)}</span>
+        <div class="card__actions"><button type="button" class="btn btn--primary" data-action="pick-option" data-id="${esc(o.id)}">Use this</button></div>
+      </article>`).join('')}</div>
+      <div class="sheet__actions">
+        <button type="button" class="btn" data-action="sheet-back">Change feedback</button>
+        <button type="button" class="btn" data-action="sheet-cancel">Keep the original</button>
+      </div>`;
+  }
+  el.innerHTML = `<div class="sheet-backdrop" data-action="sheet-cancel"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">${head}${body}</div>`;
   if (first) el.querySelector('.chip')?.focus();
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.sheet) closeSheet(); });
@@ -693,7 +821,7 @@ function personScale(p) {
 function pieceImg(idx, it) {
   const owned = it.ownedId ? ownedPhoto(it) : null;
   const src = it.product?.image || owned?.dataUrl;
-  const cls = `fl-piece fl-piece--${it.slot}${owned ? ' fl-piece--owned' : ''}`;
+  const cls = `fl-piece fl-piece--${it.slot}${owned && !owned.cutout ? ' fl-piece--owned' : ''}`;
   if (it.status === 'loading') return `<div class="${cls} fl-piece--loading" style="--swatch:${it.colorHex}"></div>`;
   if (!src) return '';
   return `<img class="${cls}" src="${esc(src)}" alt="${esc(it.product?.title || owned?.label || it.description)}" data-look="${idx}" data-key="${it.key}" draggable="false" referrerpolicy="no-referrer">`;
@@ -710,8 +838,8 @@ function flatLay(idx) {
     const upper = [get('outerwear'), get('dress') || get('top')].filter(Boolean);
     return `<div class="fl-person" style="--s:${personScale(p)}">
       <div class="fl-upper ${upper.length > 1 ? 'fl-upper--layered' : ''}">${upper.map((it) => pieceImg(idx, it)).join('')}</div>
-      ${get('bottom') && !get('dress') ? `<div class="fl-lower">${pieceImg(idx, get('bottom'))}</div>` : ''}
-      ${get('bottom') && get('dress') ? `<div class="fl-lower">${pieceImg(idx, get('bottom'))}</div>` : ''}
+      ${get('bottom') ? `<div class="fl-lower">${pieceImg(idx, get('bottom'))}</div>` : ''}
+      ${get('legwear') ? `<div class="fl-legwear">${pieceImg(idx, get('legwear'))}</div>` : ''}
       ${get('shoes') ? `<div class="fl-shoes">${pieceImg(idx, get('shoes'))}</div>` : ''}
       <span class="fl-name">${esc(personLabel(p))}</span>
     </div>`;
@@ -727,7 +855,7 @@ function shelfCard(idx, it) {
   const label = `<span class="card__who">${esc(who)} · ${esc(SLOT_LABEL[it.slot])}</span>`;
   if (it.ownedId) {
     const o = ownedPhoto(it);
-    return `<article class="card card--owned">${o ? `<img src="${o.dataUrl}" alt="">` : '<div class="card__img"></div>'}${label}
+    return `<article class="card ${o?.cutout ? '' : 'card--owned'}">${o ? `<img src="${o.dataUrl}" alt="">` : '<div class="card__img"></div>'}${label}
       <span class="card__title">${esc(o?.label || it.description)}</span><span class="card__meta">You own this</span></article>`;
   }
   if (it.status === 'loading' || it.status === 'waiting') {

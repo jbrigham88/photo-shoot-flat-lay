@@ -42,3 +42,35 @@ test('plans never include accessories', () => {
   ] }] }), [{ id: 'p1' }]);
   assert.deepEqual(plan.looks[0].items.map((i) => i.description), ['a']);
 });
+
+import { parseRanking } from '../lib/curate.js';
+import { clampBox } from '../lib/cutout.js';
+import { rejectReason } from '../lib/products.js';
+import { trendBrief } from '../lib/trends.js';
+
+test('swap options keep only real listing ids, best first', () => {
+  const r = parseRanking({ ranked: ['b', 'zzz', 'a', 'b'], new_query: '' }, items[0]);
+  assert.deepEqual(r.ranked, ['b', 'a']);
+  assert.equal(r.newQuery, null);
+});
+
+test('item box is clamped to the photo and rejects slivers', () => {
+  assert.deepEqual(clampBox([-20, 10, 500, 900], 400, 800), [0, 10, 400, 800]);
+  assert.deepEqual(clampBox([300, 400, 100, 50], 400, 800), [100, 50, 300, 400]);
+  assert.equal(clampBox([10, 10, 12, 12], 400, 800), null);
+  assert.equal(clampBox('nope', 400, 800), null);
+});
+
+test('weather gear is dropped; tights only for legwear', () => {
+  const girl = { gender: 'girl', age: 6 };
+  assert.equal(rejectReason({ title: "Girls' Lime Puffer Jacket" }, girl, 'outerwear'), 'weather gear or athletic wear');
+  assert.equal(rejectReason({ title: "Girls' Ribbed Knit Tights" }, girl, 'legwear'), null);
+  assert.equal(rejectReason({ title: "Girls' Ribbed Knit Tights" }, girl, 'dress'), 'not clothing for the shoot');
+  assert.equal(rejectReason({ title: "Girls' Corduroy Pinafore Dress" }, girl, 'legwear'), 'not tights');
+});
+
+test('trend brief follows the season of the shoot', () => {
+  assert.match(trendBrief('2026-11-21'), /FALL \/ WINTER/);
+  assert.match(trendBrief('2027-05-10'), /SPRING \/ SUMMER/);
+  assert.match(trendBrief('2026-11-21'), /Never recommend puffers/);
+});

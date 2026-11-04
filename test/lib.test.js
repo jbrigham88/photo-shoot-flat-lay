@@ -111,8 +111,10 @@ test('stylist request includes people, weather and photos', () => {
     photos: { inspiration: [tiny], owned: [{ id: 'o1', personId: 'p1', label: 'Cream dress', dataUrl: tiny }] },
   });
   const blocks = messages[0].content;
-  assert.match(blocks[0].text, /id p1, Mom, 34 years old, woman, size M, budget about \$50/);
-  assert.match(blocks[0].text, /high 48°F/);
+  const info = blocks.find((b) => b.type === 'text' && /Family:/.test(b.text));
+  assert.match(blocks[0].text, /CURRENT TRENDS/);
+  assert.match(info.text, /id p1, Mom, 34 years old, woman, size M, budget about \$50/);
+  assert.match(info.text, /high 48°F/);
   assert.equal(blocks.filter((b) => b.type === 'image').length, 2);
 });
 

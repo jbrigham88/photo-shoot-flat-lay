@@ -125,6 +125,7 @@ textarea { min-height: 72px; resize: vertical; }
 .thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
 .thumb { position: relative; width: 92px; }
 .thumb img { width: 92px; height: 92px; object-fit: cover; border-radius: 6px; }
+.thumb--cutout img { object-fit: contain; background: #fff; border: 1px solid var(--line); }
 .thumb figcaption { font-size: .75rem; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
 .thumb .x {
   position: absolute; top: -8px; right: -8px; width: 28px; height: 28px; border-radius: 50%;
@@ -186,6 +187,7 @@ textarea { min-height: 72px; resize: vertical; }
 .fl-upper:has(.fl-piece--dress) { aspect-ratio: 1 / 1.45; }
 .fl-lower { width: calc(86% * var(--s, 1)); aspect-ratio: 1 / 1.18; margin-top: -6%; }
 .fl-shoes { width: calc(60% * var(--s, 1)); aspect-ratio: 1.35 / 1; margin-top: -2%; }
+.fl-legwear { position: relative; width: calc(58% * var(--s, 1)); aspect-ratio: 1 / 1.2; margin-top: -8%; }
 .fl-piece {
   position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
   mix-blend-mode: multiply; /* white product backgrounds melt into the linen */
@@ -231,7 +233,12 @@ textarea { min-height: 72px; resize: vertical; }
   border-radius: 16px 16px 0 0; display: grid; gap: 14px;
   padding: 18px max(16px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
 }
+.sheet { max-height: 88vh; overflow-y: auto; }
 .sheet__head { display: flex; gap: 12px; align-items: center; }
+.sheet__loading { display: grid; justify-items: center; gap: 10px; text-align: center; padding-block: 18px; color: var(--muted); }
+.sheet__loading p { margin: 0; max-width: 36ch; }
+.shelf--options { padding-top: 0; }
+.shelf--options .card { flex-basis: 150px; }
 .sheet__head img { width: 64px; height: 64px; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
 .sheet__actions { display: flex; gap: 10px; justify-content: flex-end; }
 .sheet__actions .btn { flex: 1; }

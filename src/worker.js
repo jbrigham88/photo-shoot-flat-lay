@@ -5,9 +5,11 @@ import * as stylist from '../functions/api/stylist.js';
 import * as products from '../functions/api/products.js';
 import * as curate from '../functions/api/curate.js';
 import * as replace from '../functions/api/replace.js';
+import * as locate from '../functions/api/locate.js';
+import * as cutout from '../functions/api/cutout.js';
 import { json } from '../lib/http.js';
 
-const routes = { config, weather, stylist, products, curate, replace };
+const routes = { config, weather, stylist, products, curate, replace, locate, cutout };
 
 export default {
   async fetch(request, env, ctx) {

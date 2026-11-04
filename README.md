@@ -11,11 +11,19 @@ A free web app that styles a whole family for a photo shoot. Parents answer a fe
 5. **Search** (`/api/products`): each piece is searched on Channel3 with age group, gender, new condition, in stock, US/USD and price filters. Listings are dropped if they are for the wrong department, an accessory, a multi-pack, or have no product-only photo. Photos use Channel3's background-removed image of the piece itself, never on-model shots.
 6. **The edit** (`/api/curate`): before a look is shown, Claude looks at the candidate photos for every piece together and picks the set that reads best as one family. Anything that fails (wrong person, clashing color, neon trim, cheap-looking, wrong garment) gets a better search and a second check.
 7. **Results**: swipe between the three looks. Each look is one flat lay with the whole family's pieces grouped by person, and a shelf of the actual products below with price, store and Shop link.
-8. **Swap** (`/api/replace`): drag a piece off the flat lay (or tap Swap), say why, and the stylist plans a replacement, searches, and runs it through the same edit against the rest of the look.
+8. **Swap** (`/api/replace`): drag a piece off the flat lay (or tap Swap), choose one or more reasons, and the stylist plans a replacement, searches, and ranks the options that pass the same edit (`/api/curate` with `mode: "rank"`). Pick one from the row of options.
 
 Prices shown are the exact offer the Shop link goes to, straight from the feed: the lowest new, in-stock USD offer within that piece's budget.
 
 **AI cost**: the edit step sends product photos to Claude, so a full run (plan + 3 looks) costs roughly 30–60 cents on Sonnet. To lower it, set `ANTHROPIC_CURATE_MODEL` to a cheaper Claude model for the edit and swap steps.
+
+## Keeping trends current
+
+`lib/trends.js` holds the trend brief the stylist, the edit step and swaps all follow: palettes, silhouettes and fabrics per family member, and what's dated. It is researched from current family-photo styling guides, Pinterest Predicts and season trend reports, and picks the Fall/Winter or Spring/Summer brief from the shoot date. Refresh it each season (update the text and `TRENDS_UPDATED`).
+
+## Photos of pieces you own
+
+Uploads (including shop screenshots) are cut out before use: Claude finds the garment in the photo (`/api/locate`), the browser crops to it, and Cloudflare Images removes the background (`/api/cutout`, the `IMAGES` binding; included in Cloudflare's free Images allowance). If background removal isn't available, the crop is used.
 
 ## Money
 
@@ -52,6 +60,9 @@ functions/api/stylist.js         Claude plans the looks
 functions/api/products.js        Channel3 product search
 functions/api/curate.js          the photo-based edit of each look
 functions/api/replace.js         plans a replacement from swap feedback
+functions/api/locate.js          finds a garment in an uploaded photo
+functions/api/cutout.js          removes the background (Cloudflare Images)
+lib/trends.js                    current trend brief
 wrangler.toml                    Cloudflare settings
 lib/                             shared logic, unit-tested in test/
 ```
