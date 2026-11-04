@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pickPlace, daysBetween, summarizeForecast, summarizeHistory } from '../lib/weather.js';
-import { mapAge, mapGender, pickImage, normalizeProduct, buildSearchBody } from '../lib/products.js';
+import { ageGroups, mapGender, pickImage, normalizeProduct, buildSearchBody, rejectReason, collect } from '../lib/products.js';
 import { personBudgets, buildMessages, parsePlan } from '../lib/stylist.js';
 
 test('pickPlace prefers the state the user typed', () => {
@@ -31,42 +31,68 @@ test('forecast and typical summaries', () => {
 });
 
 test('age and gender map to store departments', () => {
-  assert.equal(mapAge(0.1), 'newborn');
-  assert.equal(mapAge(0.75), 'infant');
-  assert.equal(mapAge(2), 'toddler');
-  assert.equal(mapAge(8), 'kids');
-  assert.equal(mapAge(35), 'adult');
+  assert.deepEqual(ageGroups(0.1), ['newborn', 'infant']);
+  assert.deepEqual(ageGroups(2), ['toddler']);
+  assert.deepEqual(ageGroups(4), ['toddler', 'kids']);
+  assert.deepEqual(ageGroups(8), ['kids']);
+  assert.deepEqual(ageGroups(35), ['adult']);
   assert.equal(mapGender('girl'), 'female');
-  assert.equal(mapGender(''), 'unisex');
-  const body = buildSearchBody({ query: 'sage sweater', maxPrice: 40, gender: '', age: 6 });
+  assert.equal(mapGender(''), null);
+  const body = buildSearchBody({ query: 'sage sweater', maxPrice: 40, gender: '', age: 8 });
   assert.equal(body.filters.gender, undefined);
-  assert.equal(body.filters.age, 'kids');
+  assert.deepEqual(body.filters.age, ['kids']); // Channel3 wants a list
   assert.equal(body.filters.price.max_price, 40);
+  assert.equal(body.filters.condition, 'new');
+  assert.equal(body.config.currency, 'USD');
 });
 
-test('product shots beat model shots for the flat lay', () => {
-  const url = pickImage([
-    { url: 'https://x/model.jpg', shot_type: 'on_model' },
-    { url: 'https://x/flat.jpg', shot_type: 'flat_lay' },
+test('only background-removed product shots, never models', () => {
+  const pick = pickImage([
+    { url: 'https://x/model.jpg', cleaned_url: 'https://c/model.png', shot_type: 'on_model', is_main_image: true },
+    { url: 'https://x/hero.jpg', cleaned_url: 'https://c/hero.png', shot_type: 'hero' },
   ]);
-  assert.equal(url, 'https://x/flat.jpg');
-  assert.equal(pickImage(['https://x/a.jpg']), 'https://x/a.jpg');
+  assert.deepEqual(pick, { url: 'https://c/hero.png', cleaned: true });
+  assert.equal(pickImage([{ url: 'https://x/m.jpg', shot_type: 'on_model' }, { url: 'https://x/l.jpg', shot_type: 'lifestyle' }]), null);
+  assert.equal(pickImage([{ url: 'https://x/h.jpg', shot_type: 'hero' }]).url, 'https://x/h.jpg');
 });
 
-test('normalizeProduct picks the cheapest in-stock offer within budget', () => {
+test('wrong department, accessories and multipacks are dropped', () => {
+  const boy = { gender: 'boy', age: 7 };
+  assert.equal(rejectReason({ title: "Women's Quilted Vest", gender: 'female', age: 'adult' }, boy), 'wrong gender');
+  assert.equal(rejectReason({ title: "Women's Quilted Vest" }, boy), 'adult listing');
+  assert.equal(rejectReason({ title: 'Quilted Vest', age: 'adult' }, boy), 'wrong age group');
+  assert.equal(rejectReason({ title: 'Round Shoe Laces 3 Pairs' }, boy), 'not clothing for the shoot');
+  assert.equal(rejectReason({ title: "Boys' Lace-Up Chelsea Boots" }, boy), null);
+  assert.equal(rejectReason({ title: "Boys' Crew Tee 3-Pack" }, boy), 'multi-pack');
+  assert.equal(rejectReason({ title: "Men's Flannel Shirt", gender: 'male', age: 'adult' }, { gender: 'man', age: 41 }), null);
+  assert.equal(rejectReason({ title: "Girls' Corduroy Jumper" }, { gender: 'woman', age: 34 }), 'kids listing');
+});
+
+test('price shown is the price of the offer we link to', () => {
   const p = normalizeProduct({
-    id: 'p1', title: 'Knit dress', brands: [{ name: 'Acme' }],
-    images: [{ url: 'https://x/d.jpg', shot_type: 'product' }],
+    id: 'p1', title: 'Knit dress', brands: [{ id: 'b', name: 'Acme' }],
+    images: [{ url: 'https://x/d.jpg', cleaned_url: 'https://c/d.png', shot_type: 'hero' }],
     offers: [
-      { url: 'https://buy/1', domain: 'www.a.com', price: { price: 80, currency: 'USD' }, availability: 'InStock' },
-      { url: 'https://buy/2', domain: 'b.com', price: { price: 35, currency: 'USD' }, availability: 'InStock' },
+      { url: 'https://buy/1', domain: 'www.a.com', price: { price: 80, currency: 'USD', compare_at_price: 100 }, availability: 'InStock' },
+      { url: 'https://buy/2', domain: 'b.com', price: { price: 35, currency: 'USD', compare_at_price: 50 }, availability: 'InStock' },
       { url: 'https://buy/3', domain: 'c.com', price: { price: 20, currency: 'USD' }, availability: 'OutOfStock' },
+      { url: 'https://buy/4', domain: 'd.com', price: { price: 15, currency: 'USD' }, availability: 'InStock', condition: 'used' },
     ],
   }, 50);
   assert.equal(p.price, 35);
+  assert.equal(p.compareAt, 50);
   assert.equal(p.url, 'https://buy/2');
-  assert.equal(p.brand, 'Acme');
-  assert.equal(normalizeProduct({ images: ['https://x/a.jpg'], offers: [{ url: 'u', price: 90 }] }, 50), null);
+  assert.equal(p.merchant, 'b.com');
+  assert.equal(p.image, 'https://c/d.png');
+  const none = normalizeProduct({ id: 'x', images: [{ url: 'https://x/a.jpg', shot_type: 'hero' }], offers: [{ url: 'u', price: { price: 90 }, availability: 'InStock' }] }, 50);
+  assert.equal(none, null);
+});
+
+test('collect filters, dedupes and skips already-seen listings', () => {
+  const mk = (id, title, extra = {}) => ({ id, title, images: [{ url: `https://x/${id}.jpg`, cleaned_url: `https://c/${id}.png`, shot_type: 'hero' }], offers: [{ url: `https://b/${id}`, price: { price: 20 }, availability: 'InStock' }], ...extra });
+  const out = collect({ products: [mk('a', "Boys' Sweater"), mk('b', "Women's Sweater"), mk('c', "Boys' Cardigan"), mk('d', 'Shoelaces')] },
+    { gender: 'boy', age: 7, maxPrice: 30, excludeIds: ['c'] });
+  assert.deepEqual(out.map((p) => p.id), ['a']);
 });
 
 test('budgets split by person or across the family', () => {
@@ -110,19 +136,20 @@ test('stylist errors say what to fix', () => {
 });
 
 import { searchProducts, explainProductError } from '../lib/products.js';
-test('product search falls back to simpler filters when rejected', async () => {
+test('product search retries with lighter filters when rejected', async () => {
   const sent = [];
   const fetcher = async (url, opts) => {
     const body = JSON.parse(opts.body); sent.push(body);
-    if (body.filters?.age) { const e = new Error('422'); e.status = 422; e.data = { detail: [{ msg: 'bad age' }] }; throw e; }
-    return { products: [{ id: 'a', title: 'T', images: ['https://x/a.jpg'], offers: [{ url: 'https://buy', price: { price: 10 } }] }] };
+    if (body.filters?.condition) { const e = new Error('422'); e.status = 422; e.data = { detail: [{ loc: ['body', 'filters', 'condition'], msg: 'bad' }] }; throw e; }
+    return { products: [{ id: 'a', title: "Boys' Sweater", images: [{ url: 'https://x/a.jpg', shot_type: 'hero' }], offers: [{ url: 'https://buy', price: { price: 10 }, availability: 'InStock' }] }] };
   };
-  const out = await searchProducts('k', { query: 'sweater', maxPrice: 20, age: 5 }, fetcher);
+  const out = await searchProducts('k', { query: 'sweater', maxPrice: 20, age: 7, gender: 'boy' }, fetcher);
   assert.equal(out.length, 1);
   assert.equal(sent.length, 2);
-  assert.deepEqual(sent[1].filters, { price: { max_price: 20 } });
+  assert.deepEqual(sent[1].filters.age, ['kids']);
+  assert.equal(sent[1].filters.gender, 'male');
 });
 test('product errors say what to fix', () => {
   assert.match(explainProductError({ status: 401 }), /rejected the key/);
-  assert.match(explainProductError({ status: 422, data: { detail: [{ msg: 'field required' }] } }), /422: field required/);
+  assert.match(explainProductError({ status: 422, data: { detail: [{ loc: ['body', 'filters', 'age'], msg: 'Input should be a valid list' }] } }), /422: filters.age: Input should be a valid list/);
 });

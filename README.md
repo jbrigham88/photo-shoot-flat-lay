@@ -4,12 +4,18 @@ A free web app that styles a whole family for a photo shoot. Parents answer a fe
 
 ## How it works
 
-1. **Quiz**: style, setting (outdoors / indoors / studio), city, optional date, time of day, each family member's age, who they shop for and size, palette, and budget (per person or whole family).
-2. **Photos**: inspiration screenshots (Pinterest, Instagram, the location), an optional family photo, and photos of pieces they already own.
-3. **Weather** (`/api/weather`): a real forecast when the shoot is within 16 days; otherwise typical highs, lows and rain odds for that week, averaged over the last 5 years. Uses Open-Meteo, no key needed.
-4. **Stylist** (`/api/stylist`): Claude reads the answers, weather and photos and plans three looks. Each new piece comes back as a store search with a color and a max price; owned pieces are worked into the looks.
-5. **Products** (`/api/products`): each piece is searched on Channel3 (100M+ products across thousands of stores) filtered by age group, gender, in-stock and price. The app shows the real product photo, price and store, prefers product-only shots for the flat lay, and links to the offer URL, which already carries affiliate tracking.
-6. **Final set**: tap "Add to set" (or drag onto "Your set" on a computer) to mix pieces across looks. A dress replaces a top and bottom for that person. The bar at the bottom tracks the total against the budget.
+1. **Quiz**: style, setting, city, optional date, time of day, each family member's age, department and size, palette, and budget (per person or whole family).
+2. **Photos**: inspiration screenshots, an optional family photo, and photos of pieces they already own.
+3. **Weather** (`/api/weather`): forecast within 16 days, otherwise typical weather for that week (Open-Meteo, no key).
+4. **Plan** (`/api/stylist`): Claude plans three looks. Garments only (outerwear, top, dress, bottom, shoes), no accessories.
+5. **Search** (`/api/products`): each piece is searched on Channel3 with age group, gender, new condition, in stock, US/USD and price filters. Listings are dropped if they are for the wrong department, an accessory, a multi-pack, or have no product-only photo. Photos use Channel3's background-removed image of the piece itself, never on-model shots.
+6. **The edit** (`/api/curate`): before a look is shown, Claude looks at the candidate photos for every piece together and picks the set that reads best as one family. Anything that fails (wrong person, clashing color, neon trim, cheap-looking, wrong garment) gets a better search and a second check.
+7. **Results**: swipe between the three looks. Each look is one flat lay with the whole family's pieces grouped by person, and a shelf of the actual products below with price, store and Shop link.
+8. **Swap** (`/api/replace`): drag a piece off the flat lay (or tap Swap), say why, and the stylist plans a replacement, searches, and runs it through the same edit against the rest of the look.
+
+Prices shown are the exact offer the Shop link goes to, straight from the feed: the lowest new, in-stock USD offer within that piece's budget.
+
+**AI cost**: the edit step sends product photos to Claude, so a full run (plan + 3 looks) costs roughly 30–60 cents on Sonnet. To lower it, set `ANTHROPIC_CURATE_MODEL` to a cheaper Claude model for the edit and swap steps.
 
 ## Money
 
@@ -44,6 +50,8 @@ functions/api/config.js          which services are set up
 functions/api/weather.js         forecast or typical weather
 functions/api/stylist.js         Claude plans the looks
 functions/api/products.js        Channel3 product search
+functions/api/curate.js          the photo-based edit of each look
+functions/api/replace.js         plans a replacement from swap feedback
 wrangler.toml                    Cloudflare settings
 lib/                             shared logic, unit-tested in test/
 ```

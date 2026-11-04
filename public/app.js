@@ -11,12 +11,16 @@ const COLORS = [
   ['Olive', '#6B6B3A'], ['Emerald', '#1F5E4A'], ['Dusty blue', '#8EA6BD'], ['Navy', '#1F2C4A'],
   ['Charcoal', '#3B3D40'], ['Black', '#151515'], ['White', '#FAFAF7'], ['Plaid', '#8C3B2E'],
 ];
-const SLOT_ORDER = ['outerwear', 'dress', 'top', 'bottom', 'shoes', 'accessory'];
-const SLOT_LABEL = { outerwear: 'Layer', dress: 'Dress / one-piece', top: 'Top', bottom: 'Bottom', shoes: 'Shoes', accessory: 'Accessory' };
+const SLOT_ORDER = ['outerwear', 'dress', 'top', 'bottom', 'shoes'];
+const SLOT_LABEL = { outerwear: 'Layer', dress: 'Dress', top: 'Top', bottom: 'Bottom', shoes: 'Shoes' };
+const REASONS = [
+  ['color', 'Wrong color'], ['together', "Doesn't go with the rest"], ['style', 'Not their style'],
+  ['formal', 'Too dressy'], ['casual', 'Too casual'], ['price', 'Too expensive'],
+  ['fit', 'Wrong cut or fit'], ['have', 'Already have one'], ['other', 'Something else'],
+];
 const STORE_KEY = 'psfl.v1';
 
 const $app = document.getElementById('app');
-const $tray = document.getElementById('tray');
 
 let config = { stylist: false, products: false, skimlinksId: null };
 const state = loadState() || {
@@ -30,10 +34,9 @@ state.photos = { inspiration: [], family: null, owned: [] };
 state.view = 'quiz';
 state.plan = null;
 state.weather = null;
-state.products = {};      // itemKey -> { status, list, index, message }
-state.finalSet = {};      // `${personId}:${slot}` -> { item, product }
-state.tab = 'look1';
-state.demo = false;
+state.looks = [];         // built from the plan: items, chosen products, status
+state.current = 0;        // which look is on screen
+state.sheet = null;       // the "why swap it?" sheet: { lookIdx, key, reason, note }
 
 // ---------- utilities ----------
 function uid(p = 'id') { return p + Math.random().toString(36).slice(2, 8); }
@@ -215,12 +218,11 @@ function renderQuiz() {
         <span class="hint" id="formError" role="alert"></span>
       </div>
     </form>`;
-  renderTray();
 }
 
 function setupNotice() {
   const missing = [!config.stylist && 'ANTHROPIC_API_KEY (stylist)', !config.products && 'CHANNEL3_API_KEY (product photos and shop links)'].filter(Boolean);
-  return `<div class="notice"><p><b>Setup:</b> add ${missing.map(esc).join(' and ')} in Cloudflare (your Worker → Settings → Variables and Secrets), then redeploy. ${!config.stylist ? 'Until then you can preview a sample plan.' : ''}</p></div>`;
+  return `<div class="notice"><p><b>Setup:</b> add ${missing.map(esc).join(' and ')} in Cloudflare (your Worker → Settings → Variables and Secrets), then refresh this page.</p></div>`;
 }
 
 function personRow(p) {
@@ -262,7 +264,6 @@ document.addEventListener('click', async (e) => {
     else toast('Up to 4 colors');
     saveState(); renderQuiz(); return;
   }
-  if (el.dataset.tab) { state.tab = el.dataset.tab; renderResults(); return; }
   const a = el.dataset.action;
   if (a === 'add-person') { state.family.push(newPerson('Child', '')); saveState(); renderQuiz(); }
   if (a === 'remove-person') {
@@ -280,13 +281,14 @@ document.addEventListener('click', async (e) => {
     renderQuiz();
   }
   if (a === 'edit') { state.view = 'quiz'; renderQuiz(); window.scrollTo(0, 0); }
-  if (a === 'swap') swapProduct(el.dataset.key);
-  if (a === 'add-set') addToSet(el.dataset.key);
-  if (a === 'add-look') addLook(el.dataset.look);
-  if (a === 'remove-set') { delete state.finalSet[el.dataset.slot]; renderResults(); }
-  if (a === 'retry') loadProduct(el.dataset.key, true);
-  if (a === 'open-set') { state.tab = 'final'; renderResults(); document.querySelector('.tabs')?.scrollIntoView({ behavior: 'smooth' }); }
-  if (a === 'sample') runSample();
+  if (a === 'swap') openSheet(Number(el.dataset.look), el.dataset.key);
+  if (a === 'retry-item') replaceItem(Number(el.dataset.look), el.dataset.key, 'other', 'Find any piece that works with the rest of the look.');
+  if (a === 'retry-look') buildLook(Number(el.dataset.look));
+  if (a === 'go') goToLook(Number(el.dataset.to));
+  if (a === 'step') goToLook(state.current + Number(el.dataset.to));
+  if (a === 'reason') { state.sheet.reason = el.dataset.value; renderSheet(); }
+  if (a === 'sheet-cancel') closeSheet();
+  if (a === 'sheet-go') submitSheet();
 });
 
 document.addEventListener('input', (e) => {
@@ -298,6 +300,7 @@ document.addEventListener('input', (e) => {
   if (t.id === 'notes') state.quiz.notes = t.value;
   if (t.id === 'location') state.quiz.location = t.value;
   if (t.id === 'date') state.quiz.date = t.value;
+  if (t.id === 'sheetNote' && state.sheet) { state.sheet.note = t.value; return; }
   if (t.id === 'budget') state.quiz.budget.amount = t.value;
   saveState();
 });
@@ -357,17 +360,17 @@ function familyForApi() {
 }
 
 function renderWorking(stepIdx, extra = '') {
-  const steps = ['Checking the weather', 'Planning three looks', 'Finding real products in your budget'];
+  const steps = ['Checking the weather', 'Planning three looks', 'Finding and editing real products'];
   $app.innerHTML = `<section class="working"><span class="eyebrow">Styling your shoot</span><h2>Hang tight, this takes about a minute.</h2>
     <ol>${steps.map((s, i) => `<li class="${i < stepIdx ? 'done' : i === stepIdx ? 'now' : ''}">${s}${i < stepIdx ? ' ✓' : ''}</li>`).join('')}</ol>${extra}</section>`;
 }
 
 async function run() {
-  if (!config.stylist) {
-    $app.querySelector('#formError').innerHTML = 'The stylist needs ANTHROPIC_API_KEY. <button type="button" class="btn btn--ghost" data-action="sample">Preview a sample plan</button>';
+  if (!config.stylist || !config.products) {
+    $app.querySelector('#formError').textContent = 'The stylist needs both keys set up in Cloudflare first.';
     return;
   }
-  state.view = 'working'; state.products = {}; state.finalSet = {}; state.demo = false;
+  state.view = 'working';
   window.scrollTo(0, 0);
   renderWorking(0);
   const q = state.quiz;
@@ -391,153 +394,246 @@ async function run() {
     renderWorking(1, `<p class="error">${esc(e.message)}</p><div><button class="btn" data-action="edit">Back to the questions</button></div>`);
     return;
   }
-  state.view = 'results'; state.tab = 'look1';
+  state.looks = state.plan.looks.map((look) => ({
+    ...look,
+    status: 'waiting', step: '', together: '', note: '',
+    items: look.items.map((it, i) => ({
+      ...it, key: `${look.id}-${i}`, status: it.ownedId ? 'owned' : 'waiting',
+      product: null, seen: [], message: '',
+    })),
+  }));
+  state.current = 0;
+  state.view = 'results';
   renderResults();
-  loadAllProducts();
+  // Look 1 first so it's ready soonest; the others follow in the background.
+  for (let i = 0; i < state.looks.length; i += 1) await buildLook(i);
 }
 
-// ---------- products ----------
-const itemKey = (lookId, i) => `${lookId}-${i}`;
-function findItem(key) {
-  const [lookId, i] = key.split('-');
-  const look = state.plan.looks.find((l) => l.id === lookId);
-  return look?.items[Number(i)];
+// ---------- building a look: search, then a behind-the-scenes edit ----------
+function itemWho(it) {
+  const p = personById(it.personId) || {};
+  const y = ageYears(p);
+  const age = y == null ? '' : y < 2 ? `${Math.round(y * 12)} months` : `${Math.round(y)}`;
+  return [personLabel(p), age, p.gender].filter(Boolean).join(', ');
 }
 
-const queue = []; let active = 0;
-function enqueue(fn) {
-  return new Promise((resolve) => {
-    queue.push(async () => { try { await fn(); } finally { resolve(); } });
-    pump();
+async function searchFor(it, query, maxPrice) {
+  const p = personById(it.personId) || {};
+  const data = await api('/api/products', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, maxPrice, gender: p.gender, age: ageYears(p), excludeIds: it.seen }),
+  });
+  data.products.forEach((c) => { if (!it.seen.includes(c.id)) it.seen.push(c.id); });
+  return data.products;
+}
+
+// Up to 3 searches at a time so the store service isn't flooded.
+async function inBatches(list, fn, size = 3) {
+  for (let i = 0; i < list.length; i += size) await Promise.all(list.slice(i, i + size).map(fn));
+}
+
+function curateContext() {
+  const q = state.quiz;
+  return {
+    style: q.styles.join(', '),
+    setting: [q.setting, q.timeOfDay, q.location].filter(Boolean).join(', '),
+  };
+}
+
+function fixedPieces(look, exceptKeys = []) {
+  return look.items.filter((it) => !exceptKeys.includes(it.key) && (it.product || it.ownedId)).map((it) => ({
+    key: it.key, who: itemWho(it), slot: it.slot,
+    title: it.product ? it.product.title : `${ownedPhoto(it)?.label || it.description} (already owned)`,
+    image: it.product ? it.product.image : null,
+  }));
+}
+
+async function curate(look, items, candidates, fixed) {
+  return api('/api/curate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      look: { name: look.name, vibe: look.vibe },
+      palette: state.plan.palette,
+      context: curateContext(),
+      fixed,
+      items: items.map((it) => ({
+        key: it.key, who: itemWho(it), slot: it.slot, description: it.description,
+        colorName: it.colorName, maxPrice: it.maxPrice, candidates: candidates[it.key] || [],
+      })),
+    }),
   });
 }
-function pump() {
-  while (active < 3 && queue.length) {
-    const job = queue.shift(); active += 1;
-    job().finally(() => { active -= 1; pump(); });
+
+function applyChoices(items, candidates, result) {
+  const retry = [];
+  for (const c of result.choices) {
+    const it = items.find((x) => x.key === c.key);
+    if (!it) continue;
+    const pick = (candidates[it.key] || []).find((x) => x.id === c.pick);
+    if (pick) { it.product = pick; it.status = 'ok'; it.message = ''; } else retry.push({ it, query: c.newQuery, maxPrice: c.maxPrice });
   }
+  return retry;
 }
 
-function loadAllProducts() {
-  // Load the visible look first so the first board fills quickly.
-  const order = [...state.plan.looks].sort((a, b) => (a.id === state.tab ? -1 : b.id === state.tab ? 1 : 0));
-  order.forEach((look) => look.items.forEach((it, i) => { if (!it.ownedId) loadProduct(itemKey(look.id, i)); }));
-}
+async function buildLook(idx) {
+  const look = state.looks[idx];
+  const todo = look.items.filter((it) => !it.ownedId);
+  look.status = 'working'; look.step = 'Finding pieces for each of you'; look.note = '';
+  todo.forEach((it) => { it.status = 'loading'; it.product = null; it.seen = []; });
+  renderPanel(idx);
+  try {
+    // 1. Search every piece.
+    const candidates = {};
+    const failures = [];
+    await inBatches(todo, async (it) => {
+      try { candidates[it.key] = await searchFor(it, it.query, it.maxPrice); } catch (e) { candidates[it.key] = []; failures.push(e.message); }
+    });
+    if (failures.length === todo.length) throw new Error(failures[0]);
 
-function loadProduct(key, force = false) {
-  const item = findItem(key);
-  if (!item || item.ownedId) return;
-  if (state.products[key]?.status === 'ready' && !force) return;
-  state.products[key] = { status: 'loading', list: [], index: 0 };
-  refreshPiece(key);
-  if (state.demo || !config.products) {
-    state.products[key] = { status: 'nokey', list: [], index: 0, message: 'Photos appear once CHANNEL3_API_KEY is added.' };
-    refreshPiece(key); return;
-  }
-  const person = personById(item.personId);
-  return enqueue(async () => {
+    // 2. The edit: look at the photos together and pick the set.
+    look.step = 'Checking how everything looks together';
+    renderPanel(idx);
+    let retry;
     try {
-      const data = await api('/api/products', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: item.query, maxPrice: item.maxPrice, gender: person?.gender, age: ageYears(person || {}) }),
-      });
-      state.products[key] = data.products.length
-        ? { status: 'ready', list: data.products, index: 0 }
-        : { status: 'empty', list: [], index: 0 };
+      const result = await curate(look, todo, candidates, fixedPieces(look, todo.map((t) => t.key)));
+      look.together = result.together;
+      if (!result.sawPhotos) look.note = 'Some store photos could not be checked, so a few picks were made from their descriptions.';
+      retry = applyChoices(todo, candidates, result);
     } catch (e) {
-      state.products[key] = { status: 'error', list: [], index: 0, message: e.message };
+      // The edit failed: fall back to the top search result rather than show nothing.
+      todo.forEach((it) => { const c = candidates[it.key]?.[0]; if (c) { it.product = c; it.status = 'ok'; } });
+      retry = todo.filter((it) => !it.product).map((it) => ({ it, query: it.query, maxPrice: it.maxPrice }));
+      look.note = `The final style check didn't run (${e.message}), so these are the top search results.`;
     }
-    refreshPiece(key);
-  });
-}
 
-function currentProduct(key) {
-  const p = state.products[key];
-  return p?.status === 'ready' ? p.list[p.index] : null;
-}
-
-function swapProduct(key) {
-  const p = state.products[key];
-  if (!p?.list.length) return;
-  p.index = (p.index + 1) % p.list.length;
-  refreshPiece(key);
-}
-
-function refreshPiece(key) {
-  if (state.view !== 'results') return;
-  if (state.tab === 'final') { renderResults(); return; }
-  const el = document.querySelector(`[data-piece="${key}"]`);
-  if (el) el.outerHTML = pieceHtml(key);
-  renderTray();
-}
-
-// ---------- final set ----------
-function setSlotKey(item) { return `${item.personId}:${item.slot}`; }
-
-function addToSet(key, quiet = false) {
-  const item = findItem(key);
-  if (!item) return;
-  const product = currentProduct(key);
-  if (!item.ownedId && !product && !quiet) return toast('Wait for a product to load first');
-  // A dress replaces top + bottom, and the reverse.
-  const sk = setSlotKey(item);
-  if (item.slot === 'dress') { delete state.finalSet[`${item.personId}:top`]; delete state.finalSet[`${item.personId}:bottom`]; }
-  if (item.slot === 'top' || item.slot === 'bottom') delete state.finalSet[`${item.personId}:dress`];
-  state.finalSet[sk] = { item, product, key };
-  if (!quiet) {
-    toast(`Added to your set: ${SLOT_LABEL[item.slot]} for ${personLabel(personById(item.personId))}`);
-    renderResults();
+    // 3. One more round for anything that didn't pass, judged against the chosen pieces.
+    if (retry.length) {
+      look.step = 'Finding better options for a few pieces';
+      renderPanel(idx);
+      const again = {};
+      await inBatches(retry, async ({ it, query, maxPrice }) => {
+        if (maxPrice) it.maxPrice = maxPrice;
+        try { again[it.key] = await searchFor(it, query || it.query, it.maxPrice); } catch { again[it.key] = []; }
+      });
+      const items = retry.map((r) => r.it);
+      try {
+        const result = await curate(look, items, again, fixedPieces(look, items.map((t) => t.key)));
+        applyChoices(items, again, result);
+      } catch { /* leave them missing; the shelf offers a retry */ }
+      items.forEach((it) => { if (!it.product) { it.status = 'missing'; it.message = 'No piece passed the style check yet.'; } });
+    }
+    look.status = 'ready';
+  } catch (e) {
+    look.status = 'error';
+    look.note = e.message;
   }
+  renderPanel(idx);
 }
 
-function addLook(lookId) {
-  const look = state.plan.looks.find((l) => l.id === lookId);
-  look.items.forEach((it, i) => addToSet(itemKey(lookId, i), true));
-  toast(`${look.name} is in your set. Swap in pieces from other looks anytime.`);
-  renderResults();
+// ---------- swapping one piece ----------
+async function replaceItem(idx, key, reason, note) {
+  const look = state.looks[idx];
+  const it = look.items.find((x) => x.key === key);
+  if (!it || it.status === 'loading') return;
+  const before = { product: it.product, status: it.status, description: it.description, query: it.query, maxPrice: it.maxPrice, colorName: it.colorName, colorHex: it.colorHex };
+  if (it.product && !it.seen.includes(it.product.id)) it.seen.push(it.product.id);
+  it.status = 'loading';
+  it.product = null;
+  renderPanel(idx);
+  try {
+    const plan = await api('/api/replace', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        item: { who: itemWho(it), slot: it.slot, description: before.description, currentTitle: before.product?.title, price: before.product?.price, maxPrice: before.maxPrice },
+        reason, note,
+        look: { name: look.name, vibe: look.vibe },
+        palette: state.plan.palette,
+        others: fixedPieces(look, [key]).map((f) => `${f.who}, ${f.slot}: ${f.title}`),
+      }),
+    });
+    Object.assign(it, { description: plan.description, colorName: plan.colorName, colorHex: plan.colorHex, query: plan.query, maxPrice: plan.maxPrice });
+    let found = null;
+    for (let round = 0; round < 2 && !found; round += 1) {
+      const cands = { [key]: await searchFor(it, it.query, it.maxPrice) };
+      if (!cands[key].length) continue;
+      const result = await curate(look, [it], cands, fixedPieces(look, [key]));
+      const c = result.choices[0];
+      found = cands[key].find((x) => x.id === c?.pick) || null;
+      if (!found && c?.newQuery) it.query = c.newQuery;
+    }
+    if (!found) throw new Error('No replacement passed the style check. Try a different reason.');
+    it.product = found;
+    it.status = 'ok';
+    it.message = '';
+  } catch (e) {
+    Object.assign(it, before);
+    toast(e.message);
+  }
+  renderPanel(idx);
 }
 
-// Pieces added before their product loaded pick it up once it arrives.
-function setProduct(entry) { return entry.product || (entry.item.ownedId ? null : currentProduct(entry.key)); }
-
-function setTotal() {
-  return Object.values(state.finalSet).reduce((s, e) => s + (setProduct(e)?.price || 0), 0);
+// ---------- the "why swap it?" sheet ----------
+function openSheet(lookIdx, key) {
+  state.sheet = { lookIdx, key, reason: null, note: '' };
+  renderSheet();
 }
+function closeSheet() {
+  state.sheet = null;
+  document.getElementById('sheet')?.remove();
+  // A piece dragged off but kept goes back to full strength.
+  document.querySelectorAll('.fl-piece').forEach((i) => { i.style.opacity = ''; });
+}
+function submitSheet() {
+  const s = state.sheet;
+  if (!s?.reason) return toast('Pick a reason so the stylist knows what to change');
+  closeSheet();
+  replaceItem(s.lookIdx, s.key, s.reason, s.note.trim());
+}
+function renderSheet() {
+  const s = state.sheet;
+  if (!s) return;
+  const look = state.looks[s.lookIdx];
+  const it = look.items.find((x) => x.key === s.key);
+  const who = personLabel(personById(it.personId) || {});
+  let el = document.getElementById('sheet');
+  const first = !el;
+  if (!el) { el = document.createElement('div'); el.id = 'sheet'; el.className = 'sheet-wrap'; document.body.appendChild(el); }
+  el.innerHTML = `<div class="sheet-backdrop" data-action="sheet-cancel"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheet__head">
+        ${it.product ? `<img src="${esc(it.product.image)}" alt="" referrerpolicy="no-referrer">` : ''}
+        <div><span class="eyebrow">${esc(who)} · ${esc(SLOT_LABEL[it.slot])}</span>
+          <h3 id="sheetTitle">What's not working?</h3></div>
+      </div>
+      <div class="chips">${REASONS.map(([v, l]) => `<button type="button" class="chip" data-action="reason" data-value="${v}" aria-pressed="${s.reason === v}">${esc(l)}</button>`).join('')}</div>
+      <div class="field"><label for="sheetNote">Anything specific? (optional)</label>
+        <input id="sheetNote" type="text" placeholder="e.g. something softer, no plaid, more like the sweater" value="${esc(s.note)}"></div>
+      <div class="sheet__actions">
+        <button type="button" class="btn" data-action="sheet-cancel">Keep it</button>
+        <button type="button" class="btn btn--primary" data-action="sheet-go">Find a replacement</button>
+      </div>
+    </div>`;
+  if (first) el.querySelector('.chip')?.focus();
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.sheet) closeSheet(); });
+
+// ---------- results ----------
+function textOn(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return lum > 0.6 ? '#1e2a2c' : '#ffffff';
+}
+
 function budgetCap() {
   const amt = Number(state.quiz.budget.amount);
   if (!amt) return null;
   return state.quiz.budget.per === 'family' ? amt : amt * state.family.length;
 }
 
-function renderTray() {
-  const n = Object.keys(state.finalSet).length;
-  const show = state.view === 'results';
-  $tray.hidden = !show;
-  document.body.classList.toggle('has-tray', show);
-  if (!show) return;
-  const cap = budgetCap(); const total = setTotal();
-  $tray.innerHTML = `<span><b>Your set</b> · ${n} piece${n === 1 ? '' : 's'} · <span class="mono ${cap && total > cap ? 'over' : ''}">${money(total)}</span>${cap ? ` <span class="mono">of ${money(cap)}</span>` : ''}</span>
-    <button type="button" class="btn" data-action="open-set">View set</button>`;
+function ownedPhoto(item) {
+  return state.photos.owned.find((o) => o.id === item.ownedId);
 }
 
-// Drag a piece onto the "Your set" tab or the bottom bar (desktop).
-document.addEventListener('dragstart', (e) => {
-  const el = e.target.closest('[data-piece]');
-  if (!el) return;
-  e.dataTransfer.setData('text/plain', el.dataset.piece);
-  e.dataTransfer.effectAllowed = 'copy';
-});
-function dropTarget(e) { return e.target.closest?.('#tray, [data-tab="final"]'); }
-document.addEventListener('dragover', (e) => { const t = dropTarget(e); if (t) { e.preventDefault(); t.classList.add('is-drop'); } });
-document.addEventListener('dragleave', (e) => { const t = dropTarget(e); if (t) t.classList.remove('is-drop'); });
-document.addEventListener('drop', (e) => {
-  const t = dropTarget(e); if (!t) return;
-  e.preventDefault(); t.classList.remove('is-drop');
-  const key = e.dataTransfer.getData('text/plain');
-  if (key) addToSet(key);
-});
-
-// ---------- results ----------
 function renderResults() {
   const plan = state.plan;
   const w = state.weather;
@@ -545,10 +641,9 @@ function renderResults() {
   const weatherFact = w && !w.error
     ? `<div class="fact"><span class="eyebrow">${w.kind === 'forecast' ? 'Forecast' : 'Typical for this week'}</span><b>${w.highF}° / ${w.lowF}°F${w.precipChance != null ? ` · ${w.precipChance}% rain` : ''}</b><span class="hint">${esc([w.condition, w.sunset ? `sunset ${w.sunset}` : '', `${w.place.name}${w.place.region ? ', ' + w.place.region : ''}`].filter(Boolean).join(' · '))}</span></div>`
     : w?.error ? `<div class="fact"><span class="eyebrow">Weather</span><span class="hint">${esc(w.message || 'Not available')}</span></div>` : '';
-  const tabs = [...plan.looks.map((l) => [l.id, l.name]), ['final', `Your set (${Object.keys(state.finalSet).length})`]];
   $app.innerHTML = `
     <section class="results-head">
-      <span class="eyebrow">${esc([q.styles.join(' + '), q.setting === 'indoor' ? 'Indoors' : q.setting === 'studio' ? 'Studio' : 'Outdoors', q.timeOfDay].filter(Boolean).join(' · '))}${state.demo ? ' · sample plan' : ''}</span>
+      <span class="eyebrow">${esc([q.styles.join(' + '), q.setting === 'indoor' ? 'Indoors' : q.setting === 'studio' ? 'Studio' : 'Outdoors', q.timeOfDay].filter(Boolean).join(' · '))}</span>
       <h1>Three ways to dress your crew</h1>
       <p class="lede">${esc(plan.summary)}</p>
       <div class="palette" aria-label="Palette">${plan.palette.map((c) => `<span style="background:${c.hex};color:${textOn(c.hex)}">${esc(c.name)}</span>`).join('')}</div>
@@ -556,150 +651,178 @@ function renderResults() {
         ${plan.weather_note ? `<div class="fact" style="max-width:52ch"><span class="eyebrow">Why these pieces</span><span>${esc(plan.weather_note)}</span></div>` : ''}</div>
       <div><button type="button" class="btn btn--ghost" data-action="edit">Change answers</button></div>
     </section>
-    <nav class="tabs" role="tablist">${tabs.map(([id, name]) => `<button type="button" class="tab" role="tab" data-tab="${id}" aria-selected="${state.tab === id}">${esc(name)}</button>`).join('')}</nav>
-    ${state.tab === 'final' ? finalBoard() : lookBoard(plan.looks.find((l) => l.id === state.tab) || plan.looks[0])}`;
-  renderTray();
+    <nav class="look-nav" aria-label="Looks">
+      <button type="button" class="btn look-nav__arrow" data-action="step" data-to="-1" aria-label="Previous look">‹</button>
+      <div class="look-nav__dots">${state.looks.map((l, i) => `<button type="button" class="dot" data-action="go" data-to="${i}" aria-label="Look ${i + 1}: ${esc(l.name)}" aria-current="${i === state.current}"></button>`).join('')}</div>
+      <span class="look-nav__count mono" id="lookCount">Look ${state.current + 1} of ${state.looks.length}</span>
+      <button type="button" class="btn look-nav__arrow" data-action="step" data-to="1" aria-label="Next look">›</button>
+    </nav>
+    <div class="looks" id="looks">${state.looks.map((_, i) => `<section class="look" id="look-${i}" data-look="${i}" aria-roledescription="slide" aria-label="Look ${i + 1}"></section>`).join('')}</div>`;
+  state.looks.forEach((_, i) => renderPanel(i));
+  const strip = document.getElementById('looks');
+  let t;
+  strip.addEventListener('scroll', () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const i = Math.round(strip.scrollLeft / strip.clientWidth);
+      if (i !== state.current) { state.current = i; updateNav(); }
+    }, 80);
+  }, { passive: true });
 }
 
-function textOn(hex) {
-  const n = parseInt(hex.slice(1), 16);
-  const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
-  return lum > 0.6 ? '#1e2a2c' : '#ffffff';
+function updateNav() {
+  document.querySelectorAll('.look-nav .dot').forEach((d, i) => d.setAttribute('aria-current', String(i === state.current)));
+  const c = document.getElementById('lookCount');
+  if (c) c.textContent = `Look ${state.current + 1} of ${state.looks.length}`;
 }
 
-function groupByPerson(entries) {
-  return state.family.map((p) => ({
-    person: p,
-    entries: entries.filter((e) => e.item.personId === p.id)
-      .sort((a, b) => SLOT_ORDER.indexOf(a.item.slot) - SLOT_ORDER.indexOf(b.item.slot)),
-  })).filter((g) => g.entries.length);
+function goToLook(to) {
+  const strip = document.getElementById('looks');
+  if (!strip) return;
+  const i = Math.max(0, Math.min(state.looks.length - 1, to));
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  strip.scrollTo({ left: i * strip.clientWidth, behavior: reduce ? 'auto' : 'smooth' });
+  state.current = i; updateNav();
 }
 
-function lane(person, inner) {
-  return `<div class="lane"><div class="lane__who"><h3>${esc(personLabel(person))}</h3><span>${esc(personFacts(person))}</span></div>
-    <div class="lane__items">${inner}</div></div>`;
+function personScale(p) {
+  const y = ageYears(p) ?? 30;
+  return y < 1 ? 0.62 : y < 3 ? 0.7 : y < 6 ? 0.78 : y < 10 ? 0.86 : y < 14 ? 0.94 : 1;
 }
 
-function lookBoard(look) {
-  const entries = look.items.map((item, i) => ({ item, key: itemKey(look.id, i) }));
-  return `<section class="board" aria-label="${esc(look.name)}">
-    <div class="board__head"><div><h2>${esc(look.name)}</h2><p>${esc(look.vibe)}</p></div>
-      <button type="button" class="btn btn--primary" data-action="add-look" data-look="${look.id}">Use this whole look</button></div>
-    ${groupByPerson(entries).map((g) => lane(g.person, g.entries.map((e) => pieceHtml(e.key)).join(''))).join('')}
-    <p class="piece__meta">Tap “Add to set” to mix pieces from different looks. On a computer you can also drag a piece onto “Your set”.</p>
-  </section>`;
+function pieceImg(idx, it) {
+  const owned = it.ownedId ? ownedPhoto(it) : null;
+  const src = it.product?.image || owned?.dataUrl;
+  const cls = `fl-piece fl-piece--${it.slot}${owned ? ' fl-piece--owned' : ''}`;
+  if (it.status === 'loading') return `<div class="${cls} fl-piece--loading" style="--swatch:${it.colorHex}"></div>`;
+  if (!src) return '';
+  return `<img class="${cls}" src="${esc(src)}" alt="${esc(it.product?.title || owned?.label || it.description)}" data-look="${idx}" data-key="${it.key}" draggable="false" referrerpolicy="no-referrer">`;
 }
 
-function ownedPhoto(item) {
-  return state.photos.owned.find((o) => o.id === item.ownedId);
-}
-
-function pieceHtml(key) {
-  const item = findItem(key);
-  if (!item) return '';
-  const inSet = state.finalSet[setSlotKey(item)]?.key === key;
-  if (item.ownedId) {
-    const o = ownedPhoto(item);
-    return `<article class="piece piece--owned" data-piece="${key}" draggable="true">
-      <div class="piece__photo">${o ? `<img src="${o.dataUrl}" alt="${esc(o.label || item.description)}">` : placeholder(item, 'Your piece')}<span class="tag">You own</span>${inSet ? '<span class="tag tag--in" style="left:auto;right:4px">In set</span>' : ''}</div>
-      <span class="piece__slot">${SLOT_LABEL[item.slot]}</span>
-      <span class="piece__title">${esc(o?.label || item.description)}</span>
-      <div class="piece__actions"><button type="button" class="btn" data-action="add-set" data-key="${key}">${inSet ? 'In your set' : 'Add to set'}</button></div>
-    </article>`;
-  }
-  const st = state.products[key] || { status: 'loading' };
-  const prod = currentProduct(key);
-  let photo; let body;
-  if (prod) {
-    photo = `<img src="${esc(prod.image)}" alt="${esc(prod.title)}" loading="lazy" referrerpolicy="no-referrer">`;
-    body = `<span class="piece__title">${esc(prod.title)}</span>
-      <span class="piece__meta"><b>${money(prod.price)}</b> · ${esc(prod.merchant)}</span>
-      <div class="piece__actions">
-        <button type="button" class="btn" data-action="add-set" data-key="${key}">${inSet ? 'In your set' : 'Add to set'}</button>
-        ${st.list.length > 1 ? `<button type="button" class="btn" data-action="swap" data-key="${key}" aria-label="Show another option">Swap</button>` : ''}
-        <a class="btn" href="${esc(prod.url)}" target="_blank" rel="sponsored noopener">Shop</a>
-      </div>`;
-  } else {
-    const msg = st.status === 'loading' ? 'Finding it…'
-      : st.status === 'empty' ? `Nothing in stock${item.maxPrice ? ` under ${money(item.maxPrice)}` : ''} right now`
-        : st.message || 'Could not load';
-    photo = placeholder(item, msg);
-    body = `<span class="piece__title">${esc(item.description)}</span>
-      ${item.maxPrice ? `<span class="piece__meta">up to <b>${money(item.maxPrice)}</b></span>` : ''}
-      ${st.status === 'error' || st.status === 'empty' ? `<div class="piece__actions"><button type="button" class="btn" data-action="retry" data-key="${key}">Try again</button></div>` : ''}`;
-  }
-  return `<article class="piece ${st.status === 'loading' ? 'loading' : ''}" data-piece="${key}" draggable="${prod ? 'true' : 'false'}">
-    <div class="piece__photo">${photo}${inSet ? '<span class="tag tag--in">In set</span>' : ''}</div>
-    <span class="piece__slot">${SLOT_LABEL[item.slot]} · ${esc(item.colorName)}</span>
-    ${body}
-  </article>`;
-}
-
-function placeholder(item, msg) {
-  return `<div class="placeholder"><div><i style="background:${item.colorHex}"></i>${esc(msg)}</div></div>`;
-}
-
-function finalBoard() {
-  const entries = Object.values(state.finalSet);
-  const cap = budgetCap(); const total = setTotal();
-  if (!entries.length) {
-    return `<section class="board"><div class="board__head"><h2>Your set</h2></div>
-      <p class="empty-set">Nothing here yet. Open a look and tap “Use this whole look”, or add single pieces from any look to build your own mix.</p></section>`;
-  }
-  const pieces = (list) => list.map((entry) => {
-    const { item } = entry; const product = setProduct(entry);
-    const slotKey = setSlotKey(item);
-    if (item.ownedId) {
-      const o = ownedPhoto(item);
-      return `<article class="piece piece--owned"><div class="piece__photo">${o ? `<img src="${o.dataUrl}" alt="${esc(o.label)}">` : ''}<span class="tag">You own</span></div>
-        <span class="piece__slot">${SLOT_LABEL[item.slot]}</span><span class="piece__title">${esc(o?.label || item.description)}</span>
-        <div class="piece__actions"><button type="button" class="btn" data-action="remove-set" data-slot="${slotKey}">Remove</button></div></article>`;
-    }
-    return `<article class="piece"><div class="piece__photo">${product ? `<img src="${esc(product.image)}" alt="${esc(product.title)}" referrerpolicy="no-referrer">` : placeholder(item, item.description)}</div>
-      <span class="piece__slot">${SLOT_LABEL[item.slot]} · ${esc(item.colorName)}</span>
-      <span class="piece__title">${esc(product?.title || item.description)}</span>
-      ${product ? `<span class="piece__meta"><b>${money(product.price)}</b> · ${esc(product.merchant)}</span>` : ''}
-      <div class="piece__actions">
-        ${product ? `<a class="btn btn--primary" href="${esc(product.url)}" target="_blank" rel="sponsored noopener">Shop</a>` : ''}
-        <button type="button" class="btn" data-action="remove-set" data-slot="${slotKey}">Remove</button></div></article>`;
+// One tile with the whole family's pieces, grouped by person like a styled flat lay.
+function flatLay(idx) {
+  const look = state.looks[idx];
+  const people = state.family.filter((p) => look.items.some((it) => it.personId === p.id));
+  const cols = people.length > 4 ? Math.ceil(people.length / 2) : people.length;
+  const groups = people.map((p) => {
+    const mine = look.items.filter((it) => it.personId === p.id);
+    const get = (slot) => mine.find((it) => it.slot === slot);
+    const upper = [get('outerwear'), get('dress') || get('top')].filter(Boolean);
+    return `<div class="fl-person" style="--s:${personScale(p)}">
+      <div class="fl-upper ${upper.length > 1 ? 'fl-upper--layered' : ''}">${upper.map((it) => pieceImg(idx, it)).join('')}</div>
+      ${get('bottom') && !get('dress') ? `<div class="fl-lower">${pieceImg(idx, get('bottom'))}</div>` : ''}
+      ${get('bottom') && get('dress') ? `<div class="fl-lower">${pieceImg(idx, get('bottom'))}</div>` : ''}
+      ${get('shoes') ? `<div class="fl-shoes">${pieceImg(idx, get('shoes'))}</div>` : ''}
+      <span class="fl-name">${esc(personLabel(p))}</span>
+    </div>`;
   }).join('');
-  const missing = state.family.filter((p) => !entries.some((e) => e.item.personId === p.id));
-  return `<section class="board" aria-label="Your set">
-    <div class="board__head"><div><h2>Your set</h2><p>Your mix, laid out together. Shop each piece from its store.</p></div></div>
-    ${groupByPerson(entries).map((g) => lane(g.person, pieces(g.entries))).join('')}
-    ${missing.length ? `<p class="piece__meta">Still needs an outfit: ${missing.map((p) => esc(personLabel(p))).join(', ')}</p>` : ''}
-    <div class="totals"><span class="eyebrow">Total</span><b class="${cap && total > cap ? 'over' : ''}">${money(total)}</b>
-      ${cap ? `<span class="piece__meta">${total > cap ? `${money(total - cap)} over` : `${money(cap - total)} under`} your ${money(cap)} budget</span>` : ''}</div>
-  </section>`;
+  return `<div class="flatlay" data-look="${idx}" style="--cols:${cols}" aria-label="Flat lay of ${esc(look.name)}. Drag a piece off to swap it.">
+    ${groups}
+    <div class="flatlay__drop" aria-hidden="true">Let go to swap this piece</div>
+  </div>`;
 }
 
-// ---------- sample plan (before the AI key is set up) ----------
-function runSample() {
-  const fam = state.family;
-  const kid = fam.find((p) => (ageYears(p) ?? 30) < 13) || fam[0];
-  const pick = (rel, fallback) => fam.find((p) => p.relation === rel) || fallback;
-  const mom = pick('Mom', fam[0]); const dad = pick('Dad', fam[1] || fam[0]);
-  const item = (person, slot, description, colorName, colorHex) => ({ personId: person.id, slot, description, colorName, colorHex, query: description, maxPrice: 60, ownedId: null });
-  state.plan = {
-    palette: [{ name: 'Oatmeal', hex: '#D9CBB3' }, { name: 'Rust', hex: '#A4532F' }, { name: 'Sage', hex: '#A3B49A' }, { name: 'Cream', hex: '#F1EBDD' }, { name: 'Camel', hex: '#B98B5A' }],
-    summary: 'Sample plan so you can try the layout. Warm neutrals with rust and sage, mixing knits and soft textures.',
-    weather_note: 'Sample: layers for a cool autumn evening outdoors.',
-    looks: ['Harvest Knits', 'Golden Field', 'Hearthside'].map((name, li) => ({
-      id: `look${li + 1}`, name, vibe: 'Sample look to preview the collage and final-set tools.',
-      items: [
-        item(mom, 'dress', 'Long-sleeve rust midi dress', 'Rust', '#A4532F'),
-        item(mom, 'shoes', 'Cognac leather ankle boots', 'Camel', '#B98B5A'),
-        item(dad, 'top', "Men's oatmeal crewneck sweater", 'Oatmeal', '#D9CBB3'),
-        item(dad, 'bottom', "Men's dark khaki chinos", 'Camel', '#B98B5A'),
-        item(kid, 'top', 'Kids sage cable knit sweater', 'Sage', '#A3B49A'),
-        item(kid, 'bottom', 'Kids cream corduroy pants', 'Cream', '#F1EBDD'),
-      ].filter((it, i, arr) => arr.findIndex((x) => x.personId === it.personId && x.slot === it.slot) === i),
-    })),
-  };
-  state.weather = null; state.products = {}; state.finalSet = {}; state.demo = true;
-  state.view = 'results'; state.tab = 'look1';
-  renderResults(); loadAllProducts(); window.scrollTo(0, 0);
+function shelfCard(idx, it) {
+  const who = personLabel(personById(it.personId) || {});
+  const label = `<span class="card__who">${esc(who)} · ${esc(SLOT_LABEL[it.slot])}</span>`;
+  if (it.ownedId) {
+    const o = ownedPhoto(it);
+    return `<article class="card card--owned">${o ? `<img src="${o.dataUrl}" alt="">` : '<div class="card__img"></div>'}${label}
+      <span class="card__title">${esc(o?.label || it.description)}</span><span class="card__meta">You own this</span></article>`;
+  }
+  if (it.status === 'loading' || it.status === 'waiting') {
+    return `<article class="card card--loading">${'<div class="card__img"></div>'}${label}<span class="card__title">${esc(it.description)}</span><span class="card__meta">Finding a match…</span></article>`;
+  }
+  if (!it.product) {
+    return `<article class="card card--missing"><div class="card__img" style="--swatch:${it.colorHex}"></div>${label}
+      <span class="card__title">${esc(it.description)}</span><span class="card__meta">${esc(it.message || 'No match yet')}</span>
+      <div class="card__actions"><button type="button" class="btn" data-action="retry-item" data-look="${idx}" data-key="${it.key}">Try again</button></div></article>`;
+  }
+  const p = it.product;
+  return `<article class="card" id="card-${it.key}">
+    <img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" referrerpolicy="no-referrer">
+    ${label}
+    <span class="card__title">${esc(p.title)}</span>
+    <span class="card__meta"><b>${money(p.price)}</b>${p.compareAt ? ` <s>${money(p.compareAt)}</s>` : ''} · ${esc(p.merchant)}</span>
+    <div class="card__actions">
+      <a class="btn btn--primary" href="${esc(p.url)}" target="_blank" rel="sponsored noopener">Shop</a>
+      <button type="button" class="btn" data-action="swap" data-look="${idx}" data-key="${it.key}">Swap</button>
+    </div></article>`;
 }
+
+function renderPanel(idx) {
+  const el = document.getElementById(`look-${idx}`);
+  if (!el) return;
+  const look = state.looks[idx];
+  const ordered = state.family.flatMap((p) => look.items.filter((it) => it.personId === p.id)
+    .sort((a, b) => SLOT_ORDER.indexOf(a.slot) - SLOT_ORDER.indexOf(b.slot)));
+  const total = look.items.reduce((s, it) => s + (it.product?.price || 0), 0);
+  const cap = budgetCap();
+  let body;
+  if (look.status === 'waiting' || look.status === 'working') {
+    body = `<div class="flatlay flatlay--pending"><div><span class="spinner" aria-hidden="true"></div>
+      <p>${esc(look.status === 'waiting' ? 'Up next, after the look before it' : look.step)}…</p></div></div>`;
+  } else if (look.status === 'error') {
+    body = `<div class="flatlay flatlay--pending"><div><p class="error">${esc(look.note)}</p>
+      <button type="button" class="btn" data-action="retry-look" data-look="${idx}">Try this look again</button></div></div>`;
+  } else {
+    body = `${flatLay(idx)}
+      <p class="hint look__tip">Drag a piece off the flat lay to swap it.</p>
+      ${look.together ? `<p class="look__together">${esc(look.together)}</p>` : ''}
+      ${look.note ? `<p class="hint">${esc(look.note)}</p>` : ''}
+      <div class="shelf" aria-label="Pieces in this look">${ordered.map((it) => shelfCard(idx, it)).join('')}</div>
+      <div class="look__total"><span class="eyebrow">This look</span><b class="mono ${cap && total > cap ? 'over' : ''}">${money(total)}</b>
+        ${cap ? `<span class="hint">${total > cap ? `${money(total - cap)} over` : `${money(cap - total)} under`} your ${money(cap)} budget</span>` : ''}</div>`;
+  }
+  el.innerHTML = `<header class="look__head"><span class="eyebrow">Look ${idx + 1}</span><h2>${esc(look.name)}</h2><p>${esc(look.vibe)}</p></header>${body}`;
+}
+
+// ---------- dragging a piece off the flat lay ----------
+let drag = null;
+document.addEventListener('pointerdown', (e) => {
+  const img = e.target.closest?.('.fl-piece[data-key]');
+  if (!img || e.button > 0) return;
+  const tile = img.closest('.flatlay');
+  drag = { img, tile, x: e.clientX, y: e.clientY, id: e.pointerId, moved: false, out: false };
+  img.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+document.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const dx = e.clientX - drag.x; const dy = e.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+  drag.moved = true;
+  drag.img.classList.add('is-dragging');
+  drag.img.style.transform = `translate(${dx}px, ${dy}px) scale(1.06)`;
+  const r = drag.tile.getBoundingClientRect();
+  const m = 12;
+  drag.out = e.clientX < r.left - m || e.clientX > r.right + m || e.clientY < r.top - m || e.clientY > r.bottom + m;
+  drag.tile.classList.toggle('is-releasing', drag.out);
+});
+function endDrag(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const { img, tile, moved, out } = drag;
+  drag = null;
+  tile.classList.remove('is-releasing');
+  img.classList.remove('is-dragging');
+  if (out) {
+    img.style.opacity = '0.25';
+    openSheet(Number(img.dataset.look), img.dataset.key);
+    img.style.transform = '';
+    return;
+  }
+  img.style.transform = '';
+  if (!moved && e.type === 'pointerup') {
+    // A tap: show that piece in the shelf below.
+    const card = document.getElementById(`card-${img.dataset.key}`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      card.classList.add('is-flash'); setTimeout(() => card.classList.remove('is-flash'), 900);
+    }
+  }
+}
+document.addEventListener('pointerup', endDrag);
+document.addEventListener('pointercancel', endDrag);
 
 // ---------- boot ----------
 (async function boot() {

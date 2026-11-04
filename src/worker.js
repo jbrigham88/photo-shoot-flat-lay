@@ -3,9 +3,11 @@ import * as config from '../functions/api/config.js';
 import * as weather from '../functions/api/weather.js';
 import * as stylist from '../functions/api/stylist.js';
 import * as products from '../functions/api/products.js';
+import * as curate from '../functions/api/curate.js';
+import * as replace from '../functions/api/replace.js';
 import { json } from '../lib/http.js';
 
-const routes = { config, weather, stylist, products };
+const routes = { config, weather, stylist, products, curate, replace };
 
 export default {
   async fetch(request, env, ctx) {

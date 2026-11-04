@@ -12,3 +12,5 @@ SKIMLINKS_ID=
 
 # Optional: override the Claude model used by the stylist.
 # ANTHROPIC_MODEL=claude-sonnet-5-5
+# Optional: a different (e.g. cheaper) model for the photo edit and swaps.
+# ANTHROPIC_CURATE_MODEL=
